@@ -5,3 +5,4 @@ work/
 # Ghidra project and scripts (local reverse-engineering only)
 ghidra/
 tools/ghidra_*.sh
+tools/__pycache__/

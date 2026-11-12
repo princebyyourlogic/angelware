@@ -189,6 +189,11 @@ func (s *Service) login(ctx context.Context, log *slog.Logger, userID uint64) ([
 	} else {
 		w.U32(0)
 	}
+	if name != "" {
+		if err := s.Store.TouchLogin(ctx, userID); err != nil {
+			log.Warn("record login time", "err", err)
+		}
+	}
 	log.Info("login", "user", fmt.Sprintf("%016x", userID), "name", name, "mode", s.Mode)
 	return frame.Plain(msgType, w.Raw(block).Raw(ticket).Bytes()), nil
 }

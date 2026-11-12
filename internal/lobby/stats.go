@@ -20,12 +20,16 @@ const (
 
 func (c *Conn) stats(ctx context.Context, t Task) []byte {
 	if t.ID != statsWrite {
-		return Reply(t, 0, nil)
+		// Reads (3-6) are lists; leaderboards are not served yet.
+		if t.ID >= 3 && t.ID <= 6 {
+			return ListReply(t, 0, nil)
+		}
+		return Reply(t, nil)
 	}
 	fields, err := t.Args.Fields()
 	if err != nil || len(fields) < 5 {
 		c.log.Warn("stats write did not parse", "err", err, "fields", len(fields))
-		return Reply(t, 0, nil)
+		return Reply(t, nil)
 	}
 	row := store.StatsRow{Flag: uint8(fields[1].Int), Board: int32(fields[2].Int), Rating: int64(fields[4].Int)}
 	for _, f := range fields[5:] {
@@ -37,5 +41,5 @@ func (c *Conn) stats(ctx context.Context, t Task) []byte {
 		c.log.Error("save stats", "err", err)
 	}
 	c.log.Debug("stats written", "board", row.Board, "rating", row.Rating, "values", len(row.Values))
-	return Reply(t, 0, nil)
+	return Reply(t, nil)
 }

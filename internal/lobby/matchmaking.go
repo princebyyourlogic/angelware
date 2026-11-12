@@ -20,7 +20,7 @@ import (
 // assign and returned to searchers unchanged. Sessions only live as long as the
 // host's gateway connection.
 //
-// Replies (0x64ea0): u32 error, u8 kind (1/4/5/6 carry results), u32 count, results.
+// Replies (0x64ea0): u32 error, u8 task id (1/4/5/6 carry results), u32 count, results.
 // A create result is blob id[8], blob key[16].
 type Matchmaking struct {
 	Log      *slog.Logger
@@ -41,7 +41,6 @@ const (
 	mmFindByID = 4
 	mmFind     = 5
 
-	mmResultKind = 1
 	mmMaxResults = 20
 	infoID       = 1 // field positions in a session info
 	infoKey      = 2
@@ -52,8 +51,7 @@ func NewMatchmaking(log *slog.Logger) *Matchmaking {
 }
 
 func mmReply(t Task, count uint32, fields []bitbuf.Field) []byte {
-	return bitbuf.NewWriter(true).U8(t.Slot).U8(t.Seq).U32(0).
-		U8(mmResultKind).U32(count).Fields(fields).Bytes()
+	return ListReply(t, count, fields)
 }
 
 // Handle answers one matchmaking task for owner (the host's connection).

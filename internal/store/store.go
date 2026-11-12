@@ -43,12 +43,14 @@ type StatsRow struct {
 type Store interface {
 	CreateAccount(ctx context.Context, a Account) error
 	Account(ctx context.Context, userID uint64) (Account, error)
+	TouchLogin(ctx context.Context, userID uint64) error
 	PublicProfile(ctx context.Context, userID uint64) (PublicProfile, error)
 	SetPublicProfile(ctx context.Context, userID uint64, p PublicProfile) error
 	PrivateProfile(ctx context.Context, userID uint64) (PrivateProfile, error)
 	SetPrivateProfile(ctx context.Context, userID uint64, p PrivateProfile) error
 	DeleteProfile(ctx context.Context, userID uint64) error
 	WriteStats(ctx context.Context, userID uint64, row StatsRow) error
+	Social
 	Close()
 }
 
@@ -59,11 +61,12 @@ type Memory struct {
 	public   map[uint64]PublicProfile
 	private  map[uint64]PrivateProfile
 	stats    map[[2]int64]StatsRow
+	s        memSocial
 }
 
 func NewMemory() *Memory {
 	return &Memory{accounts: map[uint64]Account{}, public: map[uint64]PublicProfile{},
-		private: map[uint64]PrivateProfile{}, stats: map[[2]int64]StatsRow{}}
+		private: map[uint64]PrivateProfile{}, stats: map[[2]int64]StatsRow{}, s: newMemSocial()}
 }
 
 func (m *Memory) CreateAccount(_ context.Context, a Account) error {
@@ -85,6 +88,8 @@ func (m *Memory) Account(_ context.Context, id uint64) (Account, error) {
 	}
 	return a, nil
 }
+
+func (m *Memory) TouchLogin(context.Context, uint64) error { return nil }
 
 func (m *Memory) PublicProfile(_ context.Context, id uint64) (PublicProfile, error) {
 	m.mu.Lock()

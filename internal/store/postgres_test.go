@@ -65,4 +65,54 @@ func TestPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
+	// Social: requests, friendship, blocks and the mailbox survive in the database.
+	var other uint64 = 0x0123456789abcdef
+	p.pool.Exec(ctx, `DELETE FROM friend_requests WHERE from_id = $1 OR to_id = $1`, int64(id))
+	p.pool.Exec(ctx, `DELETE FROM friends WHERE user_id = $1 OR friend_id = $1`, int64(id))
+	p.pool.Exec(ctx, `DELETE FROM blocks WHERE user_id = $1`, int64(other))
+	p.pool.Exec(ctx, `DELETE FROM mailbox WHERE to_id = $1`, int64(other))
+	if err := p.AddFriendRequest(ctx, id, other, []byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	if reqs, err := p.FriendRequestsTo(ctx, other); err != nil || len(reqs) != 1 || reqs[0].Name != "pgtest" {
+		t.Fatalf("requests %+v %v", reqs, err)
+	}
+	if ok, err := p.RemoveFriendRequest(ctx, id, other); !ok || err != nil {
+		t.Fatalf("remove request %v %v", ok, err)
+	}
+	if err := p.AddFriendship(ctx, id, other); err != nil {
+		t.Fatal(err)
+	}
+	if fr, err := p.Friends(ctx, other); err != nil || len(fr) != 1 || fr[0].UserID != id {
+		t.Fatalf("friends %+v %v", fr, err)
+	}
+	p.RemoveFriendship(ctx, other, id)
+	if fr, _ := p.Friends(ctx, id); len(fr) != 0 {
+		t.Fatalf("friendship not removed: %+v", fr)
+	}
+	p.SetBlock(ctx, other, id, 2)
+	if b, err := p.Blocks(ctx, other); err != nil || len(b) != 1 || b[0].Level != 2 {
+		t.Fatalf("blocks %+v %v", b, err)
+	}
+	if blocked, _ := p.IsBlocked(ctx, other, id); !blocked {
+		t.Fatal("block not found")
+	}
+	mid, err := p.Enqueue(ctx, Message{To: other, Type: 5, From: id, FromName: "pgtest", Small: 7,
+		Data: []byte{1}, Data2: []byte{2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := p.Inbox(ctx, other, 0, 20)
+	if err != nil || len(inbox) != 1 || inbox[0].ID != mid || inbox[0].Small != 7 || inbox[0].Data2[0] != 2 {
+		t.Fatalf("inbox %+v %v", inbox, err)
+	}
+	p.Ack(ctx, id, mid) // wrong recipient: kept
+	if inbox, _ := p.Inbox(ctx, other, 0, 20); len(inbox) != 1 {
+		t.Fatal("ack by another user removed the message")
+	}
+	p.Ack(ctx, other, mid)
+	if inbox, _ := p.Inbox(ctx, other, 0, 20); len(inbox) != 0 {
+		t.Fatal("ack did not remove the message")
+	}
 }

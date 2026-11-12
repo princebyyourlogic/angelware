@@ -32,20 +32,38 @@ func newTCP(mode auth.Mode) (*TCP, *store.Memory) {
 	}, st
 }
 
-// client plays the console's side of one TCP connection.
+// client plays the console's side of one TCP connection. A reader goroutine
+// sorts incoming frames into replies and pushes (gateway message 2).
 type client struct {
-	t    *testing.T
-	conn net.Conn
-	r    *bufio.Reader
-	key  []byte
-	seed uint32
+	t       *testing.T
+	conn    net.Conn
+	replies chan frame.Frame
+	pushes  chan frame.Frame
+	key     []byte
+	seed    uint32
 }
 
 func dial(t *testing.T, s *TCP) *client {
 	a, b := net.Pipe()
 	go s.handle(context.Background(), b)
 	t.Cleanup(func() { a.Close() })
-	return &client{t: t, conn: a, r: bufio.NewReader(a)}
+	c := &client{t: t, conn: a, replies: make(chan frame.Frame, 16), pushes: make(chan frame.Frame, 16)}
+	go func() {
+		r := bufio.NewReader(a)
+		for {
+			f, err := frame.Read(r)
+			if err != nil {
+				close(c.replies)
+				return
+			}
+			if !f.Encrypted && f.Type == 2 {
+				c.pushes <- f
+			} else {
+				c.replies <- f
+			}
+		}
+	}()
+	return c
 }
 
 func (c *client) roundTrip(out []byte) frame.Frame {
@@ -53,11 +71,33 @@ func (c *client) roundTrip(out []byte) frame.Frame {
 	if _, err := c.conn.Write(out); err != nil {
 		c.t.Fatal(err)
 	}
-	f, err := frame.Read(c.r)
-	if err != nil {
-		c.t.Fatal(err)
+	select {
+	case f, ok := <-c.replies:
+		if !ok {
+			c.t.Fatal("connection closed")
+		}
+		return f
+	case <-time.After(2 * time.Second):
+		c.t.Fatal("no reply")
 	}
-	return f
+	return frame.Frame{}
+}
+
+// push waits for the next pushed mailbox message and returns its fields.
+func (c *client) push() []bitbuf.Field {
+	c.t.Helper()
+	select {
+	case f := <-c.pushes:
+		r, _ := bitbuf.NewReader(f.Payload)
+		fs, err := r.Fields()
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		return fs
+	case <-time.After(2 * time.Second):
+		c.t.Fatal("no push")
+	}
+	return nil
 }
 
 func signup(name, password string) []byte {
@@ -127,6 +167,12 @@ func (c *client) task(service, slot, id uint8, args ...bitbuf.Field) *bitbuf.Rea
 	if f.Type != 1 || gotSlot != slot {
 		c.t.Fatalf("reply type %d slot %d", f.Type, gotSlot)
 	}
+	if code, _ := r.U32(); code != 0 {
+		c.t.Fatalf("reply error %d", code)
+	}
+	if echoed, _ := r.U8(); echoed != id {
+		c.t.Fatalf("reply echoes task %d, want %d", echoed, id)
+	}
 	return r
 }
 
@@ -182,8 +228,6 @@ func TestHostFindAndProfiles(t *testing.T) {
 
 	// Host creates a session: result is blob id[8] + blob key[16].
 	r := host.task(5, 1, 1, append([]bitbuf.Field{bitbuf.Int(bitbuf.U8, 0)}, sessionInfo()...)...)
-	r.U32() // error
-	r.U8()  // kind
 	if n, _ := r.U32(); n != 1 {
 		t.Fatalf("create count %d", n)
 	}
@@ -191,8 +235,6 @@ func TestHostFindAndProfiles(t *testing.T) {
 
 	// The guest's search returns the stored info with the assigned id.
 	r = guest.task(5, 2, 5, bitbuf.Int(bitbuf.U8, 0), bitbuf.Int(bitbuf.I32, 1))
-	r.U32()
-	r.U8()
 	if n, _ := r.U32(); n != 1 {
 		t.Fatalf("find count %d", n)
 	}
@@ -205,8 +247,6 @@ func TestHostFindAndProfiles(t *testing.T) {
 	guest.task(8, 3, 5, bitbuf.Int(bitbuf.U8, 0), bitbuf.Int(bitbuf.I32, 1), bitbuf.Int(bitbuf.I32, 0),
 		bitbuf.Int(bitbuf.I32, 0), bitbuf.Int(bitbuf.I32, 0))
 	r = guest.task(8, 4, 3, bitbuf.Int(bitbuf.U8, 0))
-	r.U32()
-	r.U8()
 	prof, _ := r.Fields()
 	if len(prof) != 5 || prof[0].Int != dwcrypto.UserID([]byte("guest")) || prof[1].Int != 1 {
 		t.Fatalf("private profile %v", prof)
@@ -227,5 +267,95 @@ func TestHostFindAndProfiles(t *testing.T) {
 			t.Fatal("session outlived its host connection")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func u8(v uint64) bitbuf.Field  { return bitbuf.Int(bitbuf.U8, v) }
+func u64(v uint64) bitbuf.Field { return bitbuf.Int(bitbuf.U64, v) }
+
+// fetch reads the mailbox (service 6 task 1) and returns each message's fields.
+func (c *client) fetch(slot uint8) [][]bitbuf.Field {
+	c.t.Helper()
+	r := c.task(6, slot, 1, u8(0), bitbuf.Int(bitbuf.U32, 0), bitbuf.Int(bitbuf.U32, 20),
+		bitbuf.Int(bitbuf.Bool, 1), bitbuf.Int(bitbuf.Bool, 1))
+	n, _ := r.U32()
+	all, err := r.Fields()
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	var msgs [][]bitbuf.Field
+	for i := 0; i < int(n); i++ {
+		size := map[uint64]int{1: 9, 2: 7, 3: 7, 4: 7, 5: 10, 6: 10, 7: 10}[all[0].Int]
+		if size == 0 {
+			size = 8 // types 8-12: header, sender, one blob
+		}
+		msgs = append(msgs, all[:size])
+		all = all[size:]
+	}
+	return msgs
+}
+
+func TestFriendsMailboxAndPresence(t *testing.T) {
+	s, _ := newTCP(auth.Verify)
+	for _, n := range []string{"host", "guest"} {
+		dial(t, s).roundTrip(signup(n, n+"pw"))
+	}
+	hostID, guestID := dwcrypto.UserID([]byte("host")), dwcrypto.UserID([]byte("guest"))
+	host := loginAndOpenGateway(t, s, "host", "hostpw")
+
+	// The guest is offline: the request waits in their mailbox.
+	host.task(9, 1, 1, u8(0), u64(guestID), bitbuf.Bytes(bitbuf.Blob, []byte("hi")), bitbuf.Int(bitbuf.U32, 2))
+
+	guest := loginAndOpenGateway(t, s, "guest", "guestpw")
+	msgs := guest.fetch(2)
+	if len(msgs) != 1 || msgs[0][0].Int != 1 || msgs[0][5].Int != hostID || string(msgs[0][6].Bytes) != "host" ||
+		string(msgs[0][8].Bytes) != "hi" {
+		t.Fatalf("mailbox %v", msgs)
+	}
+	r := guest.task(9, 3, 19, u8(0)) // pending requests list
+	if n, _ := r.U32(); n != 1 {
+		t.Fatalf("requests %d", n)
+	}
+	guest.task(6, 4, 4, u8(0), u64(msgs[0][2].Int)) // acknowledge
+	if left := guest.fetch(5); len(left) != 0 {
+		t.Fatalf("message not removed after ack: %v", left)
+	}
+
+	// Accepting reaches the host live; both now list each other as online friends.
+	guest.task(9, 6, 2, u8(0), u64(hostID))
+	if m := host.push(); m[0].Int != 2 || m[5].Int != guestID {
+		t.Fatalf("accept push %v", m)
+	}
+	r = host.task(9, 7, 5, u8(0))
+	n, _ := r.U32()
+	friends, _ := r.Fields()
+	if n != 1 || friends[0].Int != guestID || string(friends[1].Bytes) != "guest" || friends[2].Int != 1 {
+		t.Fatalf("friend list %d %v", n, friends)
+	}
+
+	// Friend message and an invite with its join information, answered.
+	host.task(9, 8, 12, u8(0), u64(guestID), bitbuf.Int(bitbuf.U32, 4),
+		bitbuf.Bytes(bitbuf.Blob, []byte("gg")), bitbuf.Int(bitbuf.U32, 0))
+	if m := guest.push(); m[0].Int != 8 || string(m[7].Bytes) != "gg" {
+		t.Fatalf("message push %v", m)
+	}
+	host.task(9, 9, 8, u8(0), u64(guestID), bitbuf.Bytes(bitbuf.Blob, []byte{1, 2}), bitbuf.Int(bitbuf.U32, 7),
+		bitbuf.Bytes(bitbuf.Blob, []byte{3}), bitbuf.Int(bitbuf.U32, 0))
+	if m := guest.push(); m[0].Int != 5 || len(m[7].Bytes) != 2 || m[8].Int != 7 || m[9].Bytes[0] != 3 {
+		t.Fatalf("invite push %v", m)
+	}
+	guest.task(9, 10, 9, u8(0), u64(hostID))
+	if m := host.push(); m[0].Int != 6 || m[8].Int != 7 {
+		t.Fatalf("invite accept push %v", m)
+	}
+
+	// Presence: the guest reconnecting is announced to the online host.
+	guest.conn.Close()
+	if m := host.push(); m[0].Int != 10 {
+		t.Fatalf("offline push %v", m)
+	}
+	loginAndOpenGateway(t, s, "guest", "guestpw")
+	if m := host.push(); m[0].Int != 9 || m[5].Int != guestID {
+		t.Fatalf("online push %v", m)
 	}
 }

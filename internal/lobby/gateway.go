@@ -3,7 +3,12 @@
 // The client opens with plain message 7 {u32 ticket.a, u32 ticket.seed, 1024-bit
 // lobby ticket} and then sends tasks encrypted with the session key from its login
 // ticket. A task's message type is its service; the typed payload starts with
-// u8 slot, u8 seq, u8 task id. Server messages: 1 = task reply, 2 = push.
+// u8 slot, u8 seq, u8 task id. Server messages: 1 = task reply, 2 = push (one
+// mailbox message, see mailbox.go).
+//
+// Task replies (docs/svr2007-services.md): u8 slot, u8 seq, u32 error, u8 task id
+// (echoed; each service's parser only accepts its own result-bearing ids), then
+// u32 count and results for tasks that return lists.
 package lobby
 
 import (
@@ -24,13 +29,16 @@ import (
 const (
 	MsgHello     = 7
 	msgTaskReply = 1
+	msgPush      = 2
 )
 
 // Lobby services (task message types); see docs/svr2007-analysis.md.
 const (
 	svcStats       = 4
 	svcMatchmaking = 5
+	svcMailbox     = 6
 	svcProfiles    = 8
+	svcFriends     = 9
 )
 
 type Server struct {
@@ -38,6 +46,10 @@ type Server struct {
 	Sessions    *session.Registry
 	Matchmaking *Matchmaking
 	Log         *slog.Logger
+
+	mu      sync.Mutex
+	online  map[uint64]*Conn     // user id -> gateway connection
+	invites map[[2]uint64]invite // (inviter, invitee) -> join information
 }
 
 // Conn is one client's gateway connection.
@@ -46,8 +58,13 @@ type Conn struct {
 	conn net.Conn
 	log  *slog.Logger
 	sess session.Session
-	wmu  sync.Mutex
+	out  chan []byte // frames for the writer goroutine
+	done chan struct{}
 }
+
+// outQueue bounds a client's unsent frames; a client that stops reading loses
+// pushes (they stay in the mailbox) instead of blocking whoever notifies it.
+const outQueue = 64
 
 // Task is a decoded client task.
 type Task struct {
@@ -57,12 +74,17 @@ type Task struct {
 
 // Serve runs a gateway connection that opened with hello.
 func (s *Server) Serve(ctx context.Context, nc net.Conn, r *bufio.Reader, hello frame.Frame) {
-	c := &Conn{srv: s, conn: nc, log: s.Log.With("peer", nc.RemoteAddr().String())}
+	c := &Conn{srv: s, conn: nc, log: s.Log.With("peer", nc.RemoteAddr().String()),
+		out: make(chan []byte, outQueue), done: make(chan struct{})}
+	go c.writer()
+	defer close(c.done)
 	defer s.Matchmaking.DropOwner(c)
 	if err := c.hello(hello); err != nil {
 		c.log.Warn("gateway hello rejected", "err", err)
 		return
 	}
+	s.setOnline(ctx, c)
+	defer s.setOffline(ctx, c)
 	for {
 		f, err := frame.Read(r)
 		if err != nil {
@@ -135,20 +157,99 @@ func (c *Conn) handle(ctx context.Context, f frame.Frame) error {
 		reply = c.profiles(ctx, t)
 	case svcStats:
 		reply = c.stats(ctx, t)
+	case svcMailbox:
+		reply = c.mailbox(ctx, t)
+	case svcFriends:
+		reply = c.friends(ctx, t)
 	default:
-		reply = Reply(t, 0, nil)
+		reply = Reply(t, nil)
 	}
 	return c.send(msgTaskReply, reply)
 }
 
+// send queues a frame, waiting for room (task replies must not be lost).
 func (c *Conn) send(msgType uint8, payload []byte) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	_, err := c.conn.Write(frame.Plain(msgType, payload))
-	return err
+	select {
+	case c.out <- frame.Plain(msgType, payload):
+		return nil
+	case <-c.done:
+		return net.ErrClosed
+	}
 }
 
-// Reply is the generic task result (LBYM 0x6d308): u32 error, u8 count, fields.
-func Reply(t Task, count uint8, fields []bitbuf.Field) []byte {
-	return bitbuf.NewWriter(true).U8(t.Slot).U8(t.Seq).U32(0).U8(count).Fields(fields).Bytes()
+// trySend queues a frame only if there is room right away.
+func (c *Conn) trySend(msgType uint8, payload []byte) bool {
+	select {
+	case c.out <- frame.Plain(msgType, payload):
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Conn) writer() {
+	for {
+		select {
+		case b := <-c.out:
+			if _, err := c.conn.Write(b); err != nil {
+				c.conn.Close()
+				return
+			}
+		case <-c.done:
+			return
+		}
+	}
+}
+
+// Reply is a task result without a list: u32 error 0, u8 task id, then fields
+// (a single result object, e.g. a profile).
+func Reply(t Task, fields []bitbuf.Field) []byte {
+	return bitbuf.NewWriter(true).U8(t.Slot).U8(t.Seq).U32(0).U8(t.ID).Fields(fields).Bytes()
+}
+
+// ListReply is a task result carrying count items (fields holds all of them).
+func ListReply(t Task, count uint32, fields []bitbuf.Field) []byte {
+	return bitbuf.NewWriter(true).U8(t.Slot).U8(t.Seq).U32(0).U8(t.ID).U32(count).Fields(fields).Bytes()
+}
+
+// UserID is the connection's user.
+func (c *Conn) UserID() uint64 { return c.sess.UserID }
+
+// push sends one mailbox message to this client right away, without blocking.
+func (c *Conn) push(m store.Message) {
+	if !c.trySend(msgPush, pushPayload(m)) {
+		c.log.Warn("push dropped: client queue full", "type", m.Type)
+	}
+}
+
+func (s *Server) setOnline(ctx context.Context, c *Conn) {
+	s.mu.Lock()
+	if s.online == nil {
+		s.online = map[uint64]*Conn{}
+	}
+	prev := s.online[c.sess.UserID]
+	s.online[c.sess.UserID] = c
+	s.mu.Unlock()
+	if prev == nil {
+		s.announce(ctx, c.sess, msgFriendOnline)
+	}
+}
+
+func (s *Server) setOffline(ctx context.Context, c *Conn) {
+	s.mu.Lock()
+	gone := s.online[c.sess.UserID] == c
+	if gone {
+		delete(s.online, c.sess.UserID)
+	}
+	s.mu.Unlock()
+	if gone {
+		s.announce(context.WithoutCancel(ctx), c.sess, msgFriendOffline)
+	}
+}
+
+// Online returns the gateway connection of a user, or nil.
+func (s *Server) Online(user uint64) *Conn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.online[user]
 }

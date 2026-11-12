@@ -26,3 +26,39 @@ CREATE TABLE IF NOT EXISTS stats (
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, board)
 );
+
+CREATE TABLE IF NOT EXISTS mailbox (
+    id         bigserial PRIMARY KEY,            -- message id the game acknowledges
+    to_id      bigint NOT NULL,
+    type       integer NOT NULL,
+    from_id    bigint NOT NULL,
+    from_name  text NOT NULL,
+    small      integer NOT NULL DEFAULT 0,
+    data       bytea,
+    data2      bytea,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mailbox_to_id ON mailbox (to_id, id);
+
+CREATE TABLE IF NOT EXISTS friend_requests (
+    from_id    bigint NOT NULL,
+    to_id      bigint NOT NULL,
+    data       bytea,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (from_id, to_id)
+);
+CREATE INDEX IF NOT EXISTS friend_requests_to ON friend_requests (to_id);
+
+CREATE TABLE IF NOT EXISTS friends (                 -- one row per direction
+    user_id    bigint NOT NULL,
+    friend_id  bigint NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, friend_id)
+);
+
+CREATE TABLE IF NOT EXISTS blocks (
+    user_id    bigint NOT NULL,
+    blocked_id bigint NOT NULL,
+    level      smallint NOT NULL,
+    PRIMARY KEY (user_id, blocked_id)
+);

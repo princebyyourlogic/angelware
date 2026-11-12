@@ -53,12 +53,17 @@ func (p *Postgres) CreateAccount(ctx context.Context, a Account) error {
 func (p *Postgres) Account(ctx context.Context, id uint64) (Account, error) {
 	a := Account{UserID: id}
 	err := p.pool.QueryRow(ctx,
-		`UPDATE accounts SET last_login = now() WHERE user_id = $1 RETURNING name, password_tiger`,
+		`SELECT name, password_tiger FROM accounts WHERE user_id = $1`,
 		int64(id)).Scan(&a.Name, &a.PasswordTiger)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrNotFound
 	}
 	return a, err
+}
+
+func (p *Postgres) TouchLogin(ctx context.Context, id uint64) error {
+	_, err := p.pool.Exec(ctx, `UPDATE accounts SET last_login = now() WHERE user_id = $1`, int64(id))
+	return err
 }
 
 func (p *Postgres) PublicProfile(ctx context.Context, id uint64) (PublicProfile, error) {
