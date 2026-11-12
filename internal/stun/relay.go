@@ -27,6 +27,7 @@ const (
 	maxBuffered    = 16
 	unknownBurst   = 40.0 // packets from unmapped sources per destination, refilled 20/s
 	unknownRate    = 20.0
+	flowReport     = 10 * time.Second
 )
 
 type relayClient struct {
@@ -70,8 +71,8 @@ type pending struct {
 }
 
 type flow struct {
-	created, lastSeen time.Time
-	packets, bytes    [2]int
+	created, lastSeen, lastReport time.Time
+	packets, bytes                [2]int
 }
 
 type introduction struct {
@@ -232,7 +233,7 @@ func (r *relay) deliver(sender, destination int, from netip.AddrPort, packet []b
 	key := sorted(sender, destination)
 	f, ok := r.flows[key]
 	if !ok {
-		f = &flow{created: now}
+		f = &flow{created: now, lastReport: now}
 		r.flows[key] = f
 		r.log.Info("relay flow started", "a", key.a, "b", key.b)
 	}
@@ -272,11 +273,11 @@ func (r *relay) flush(now time.Time) []Outbound {
 
 func (r *relay) receive(destination int, packet []byte, from netip.AddrPort, now time.Time) []Outbound {
 	if r.clients[destination] == nil || len(packet) == 0 || len(packet) > maxDatagram {
-		return nil
+		return r.drop("destination gone, empty or oversized", destination, from, packet)
 	}
 	if p, ok := r.probes[string(packet)]; ok {
 		if p.destination != destination || now.Sub(p.created) > probeLifetime {
-			return nil
+			return r.drop("probe echo on the wrong endpoint or expired", destination, from, packet)
 		}
 		delete(r.probes, string(packet))
 		r.learn(p.client, destination, from, now)
@@ -284,23 +285,23 @@ func (r *relay) receive(destination int, packet []byte, from netip.AddrPort, now
 	}
 	// Forward a native 0x0c only if it answers an introduction seen here; other
 	// echoes may be delayed or replayed mapping challenges.
-	if packet[0] == introReply {
+	if packet[0] == introReply && len(packet) == traversalSize {
 		in, ok := r.introductions[string(packet)]
 		if !ok || in.a != destination || now.Sub(in.at) > bufferLifetime {
-			return nil
+			return r.drop("unmatched 0x0c", destination, from, packet)
 		}
 	}
 	key := pendingKey{destination, from}
 	sender, known := r.sources[key]
 	if known && !r.allowed(sender, destination, now) {
-		return nil
+		return r.drop("pair not offered", destination, from, packet)
 	}
 	if !known {
 		if !r.allowUnknown(destination, now) {
-			return nil
+			return r.drop("unknown source rate limit", destination, from, packet)
 		}
 		if r.allowPair != nil && !r.anyAllowed(destination, now) {
-			return nil
+			return r.drop("no offered peer", destination, from, packet)
 		}
 	}
 	if known && r.clients[sender] != nil {
@@ -338,6 +339,16 @@ func (r *relay) receive(destination int, packet []byte, from netip.AddrPort, now
 		}
 	}
 	return out
+}
+
+func (r *relay) drop(reason string, destination int, from netip.AddrPort, packet []byte) []Outbound {
+	kind := -1
+	if len(packet) > 0 {
+		kind = int(packet[0])
+	}
+	r.log.Debug("relay packet dropped", "reason", reason, "destination", destination, "from", from,
+		"type", kind, "bytes", len(packet))
+	return nil
 }
 
 func (r *relay) anyAllowed(destination int, now time.Time) bool {
@@ -406,6 +417,11 @@ func (r *relay) tick(now time.Time) []Outbound {
 		}
 	}
 	for k, f := range r.flows {
+		if now.Sub(f.lastReport) >= flowReport {
+			f.lastReport = now
+			r.log.Debug("relay flow", "a", k.a, "b", k.b, "packets", f.packets, "bytes", f.bytes,
+				"idle", now.Sub(f.lastSeen).Round(time.Second).String())
+		}
 		if now.Sub(f.lastSeen) > relayTTL {
 			delete(r.flows, k)
 			r.log.Info("relay flow ended", "a", k.a, "b", k.b, "packets", f.packets, "bytes", f.bytes,
