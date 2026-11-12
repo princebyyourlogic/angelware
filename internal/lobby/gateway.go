@@ -39,6 +39,7 @@ const (
 	svcMailbox     = 6
 	svcProfiles    = 8
 	svcFriends     = 9
+	svcStorage     = 10
 )
 
 type Server struct {
@@ -161,6 +162,8 @@ func (c *Conn) handle(ctx context.Context, f frame.Frame) error {
 		reply = c.mailbox(ctx, t)
 	case svcFriends:
 		reply = c.friends(ctx, t)
+	case svcStorage:
+		reply = c.storage(ctx, t)
 	default:
 		reply = Reply(t, nil)
 	}
@@ -205,6 +208,11 @@ func (c *Conn) writer() {
 // (a single result object, e.g. a profile).
 func Reply(t Task, fields []bitbuf.Field) []byte {
 	return bitbuf.NewWriter(true).U8(t.Slot).U8(t.Seq).U32(0).U8(t.ID).Fields(fields).Bytes()
+}
+
+// ErrorReply fails a task: the client reads the non-zero error and nothing after it.
+func ErrorReply(t Task, code uint32) []byte {
+	return bitbuf.NewWriter(true).U8(t.Slot).U8(t.Seq).U32(code).Bytes()
 }
 
 // ListReply is a task result carrying count items (fields holds all of them).

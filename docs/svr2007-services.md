@@ -211,7 +211,7 @@ hidden. Results are ordered by rank distance, then age, at most 20. Type 3 only 
 | Service | Tasks seen | Notes |
 | --- | --- | --- |
 | 3 | 1-27 | No direct callers (reached through vtables); not used in captures. Args start `(u8, string)`, `(u8, u64, string)`, `(u8, u64, u64)`. Unknown purpose |
-| 10 | 1-8 | Storage (`CDWStorageProcess`): upload, update, download, list by user/publisher (created wrestlers/replays, inferred). Args e.g. `(u8, bool, string, bool, blob)` |
+| 10 | 1-5, 7, 8 | **Storage** (`CDWStorageProcess`, used by trades), implemented: 1 upload `(u8, bool flag, string name, bool visible, blob)` → u64 file id; 2 update data `(u8, u64, blob)`; 3 update params `(u8, u64, string, bool)`; 4 remove `(u8, u64)`; 5 download `(u8, u64)` → file info + blob; 7 list by user `(u8, u64 user, u32 offset, u16 count)`; 8 list by publisher `(u8, u32, u16)`. File info (`0x70470`): u64 id, u32 created, u32 modified, bool flag, bool visible, u64 owner, string name. Results `0x71090`: 1 and 5 one object, 7 and 8 count + items |
 | 11 | 1-6 | `(u8, u64)`, `(u8, u64, blob)`, … no game caller found; unused so far |
 | 12 | 1-4 | Title utilities: 1 = check a string (lobby task 0x39; inferred profanity/name filter), 2 = `(u8, i16, i8, i8, i16, i16)` (inferred date), 3 = `(u32)`, 4 = `(u8)` (inferred server time). Result envelope accepts taskID 1, 2, 4 |
 

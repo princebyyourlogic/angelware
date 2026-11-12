@@ -53,6 +53,7 @@ type Store interface {
 	DeleteStats(ctx context.Context, userID uint64, board int32) error
 	Social
 	Leaderboards
+	Files
 	Close()
 }
 
@@ -64,6 +65,7 @@ type Memory struct {
 	private  map[uint64]PrivateProfile
 	stats    map[[2]int64]StatsRow
 	s        memSocial
+	f        memFiles
 }
 
 func NewMemory() *Memory {

@@ -153,4 +153,34 @@ func TestPostgres(t *testing.T) {
 		t.Fatalf("after delete %d rows", n)
 	}
 	p.pool.Exec(ctx, `DELETE FROM stats WHERE board = $1`, lb)
+
+	// Storage files.
+	fid, err := p.CreateFile(ctx, File{Owner: id, Name: "pg", Flag: true, Visible: false, Data: []byte{1, 2, 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fs, err := p.FilesByOwner(ctx, id, false, 0, 10); err != nil || len(fs) != 0 {
+		t.Fatalf("private file listed to others %v %v", fs, err)
+	}
+	n := "renamed"
+	if ok, err := p.UpdateFile(ctx, id, fid, nil, &n, true); !ok || err != nil {
+		t.Fatalf("rename %v %v", ok, err)
+	}
+	if ok, _ := p.UpdateFile(ctx, 77, fid, []byte{9}, nil, false); ok {
+		t.Fatal("update by another owner")
+	}
+	if ok, err := p.UpdateFile(ctx, id, fid, []byte{4, 5}, nil, false); !ok || err != nil {
+		t.Fatalf("update data %v %v", ok, err)
+	}
+	f, err := p.File(ctx, fid)
+	if err != nil || f.Name != "renamed" || !f.Visible || !f.Flag || len(f.Data) != 2 {
+		t.Fatalf("file %+v %v", f, err)
+	}
+	if fs, _ := p.FilesByOwner(ctx, id, false, 0, 10); len(fs) != 1 || fs[0].Data != nil {
+		t.Fatalf("public listing %+v", fs)
+	}
+	p.DeleteFile(ctx, id, fid)
+	if _, err := p.File(ctx, fid); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted file %v", err)
+	}
 }

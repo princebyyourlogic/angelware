@@ -152,6 +152,19 @@ func loginAndOpenGateway(t *testing.T, s *TCP, name, password string) *client {
 // echoed slot/seq.
 func (c *client) task(service, slot, id uint8, args ...bitbuf.Field) *bitbuf.Reader {
 	c.t.Helper()
+	r, code := c.taskStatus(service, slot, id, args...)
+	if code != 0 {
+		c.t.Fatalf("reply error %d", code)
+	}
+	if echoed, _ := r.U8(); echoed != id {
+		c.t.Fatalf("reply echoes task %d, want %d", echoed, id)
+	}
+	return r
+}
+
+// taskStatus sends a task and returns the reply after its error code.
+func (c *client) taskStatus(service, slot, id uint8, args ...bitbuf.Field) (*bitbuf.Reader, uint32) {
+	c.t.Helper()
 	payload := bitbuf.NewWriter(true).U8(slot).U8(0).U8(id).Fields(args).Raw(make([]byte, 4)).Bytes()
 	body := binary.LittleEndian.AppendUint32(nil, frame.Magic)
 	body = append(append(body, service), payload...)
@@ -167,13 +180,8 @@ func (c *client) task(service, slot, id uint8, args ...bitbuf.Field) *bitbuf.Rea
 	if f.Type != 1 || gotSlot != slot {
 		c.t.Fatalf("reply type %d slot %d", f.Type, gotSlot)
 	}
-	if code, _ := r.U32(); code != 0 {
-		c.t.Fatalf("reply error %d", code)
-	}
-	if echoed, _ := r.U8(); echoed != id {
-		c.t.Fatalf("reply echoes task %d, want %d", echoed, id)
-	}
-	return r
+	code, _ := r.U32()
+	return r, code
 }
 
 func TestSignupAndVerifiedLogin(t *testing.T) {
@@ -514,5 +522,78 @@ func TestLeaderboards(t *testing.T) {
 	// A board nobody wrote: no rows.
 	if rows = readRows(t, clients["low"].task(4, 6, 3, u8(0), bitbuf.Int(bitbuf.I32, 10), u64(id("low"))), 32); len(rows) != 0 {
 		t.Fatalf("empty board %+v", rows)
+	}
+}
+
+func TestStorage(t *testing.T) {
+	s, _ := newTCP(auth.Verify)
+	for _, n := range []string{"maker", "taker"} {
+		dial(t, s).roundTrip(signup(n, n+"pw"))
+	}
+	maker := loginAndOpenGateway(t, s, "maker", "makerpw")
+	taker := loginAndOpenGateway(t, s, "taker", "takerpw")
+	makerID := dwcrypto.UserID([]byte("maker"))
+	b := func(v uint64) bitbuf.Field { return bitbuf.Int(bitbuf.Bool, v) }
+	str := func(v string) bitbuf.Field { return bitbuf.Bytes(bitbuf.String, []byte(v)) }
+	blob := func(v []byte) bitbuf.Field { return bitbuf.Bytes(bitbuf.Blob, v) }
+
+	upload := func(name string, visible uint64, data []byte) uint64 {
+		r := maker.task(10, 1, 1, u8(0), b(1), str(name), b(visible), blob(data))
+		id, err := r.Field()
+		if err != nil || id.Type != bitbuf.U64 || id.Int == 0 {
+			t.Fatalf("upload result %v %v", id, err)
+		}
+		return id.Int
+	}
+	pub := upload("Champion", 1, []byte("superstar data"))
+	priv := upload("Secret", 0, []byte("hidden"))
+
+	// Listing as the taker request did it: u8, u64 user, u32 offset, u16 count.
+	list := func(c *client, slot uint8) []bitbuf.Field {
+		r := c.task(10, slot, 7, u8(0), u64(makerID), bitbuf.Int(bitbuf.U32, 0), bitbuf.Int(bitbuf.U16, 20))
+		n, _ := r.U32()
+		fs, _ := r.Fields()
+		if len(fs) != int(n)*7 {
+			t.Fatalf("list of %d with %d fields", n, len(fs))
+		}
+		return fs
+	}
+	if fs := list(taker, 2); len(fs) != 7 || fs[0].Int != pub || string(fs[6].Bytes) != "Champion" ||
+		fs[5].Int != makerID || fs[3].Int != 1 || fs[4].Int != 1 {
+		t.Fatalf("taker sees %v", fs)
+	}
+	if fs := list(maker, 3); len(fs) != 14 {
+		t.Fatalf("owner sees %d fields", len(fs))
+	}
+
+	// Download: public data comes back; private and unknown files fail.
+	r := taker.task(10, 4, 5, u8(0), u64(pub))
+	fs, _ := r.Fields()
+	if len(fs) != 8 || string(fs[7].Bytes) != "superstar data" {
+		t.Fatalf("download %v", fs)
+	}
+	for _, id := range []uint64{priv, 9999} {
+		if _, code := taker.taskStatus(10, 5, 5, u8(0), u64(id)); code == 0 {
+			t.Fatalf("download of %d succeeded", id)
+		}
+	}
+	// Only the owner can remove or rename.
+	taker.task(10, 6, 4, u8(0), u64(pub))
+	if _, code := taker.taskStatus(10, 7, 3, u8(0), u64(pub), str("Stolen"), b(1)); code == 0 {
+		t.Fatal("rename by another player succeeded")
+	}
+	maker.task(10, 8, 3, u8(0), u64(priv), str("Now public"), b(1))
+	if fs := list(taker, 9); len(fs) != 14 {
+		t.Fatalf("after owner made it public: %d fields", len(fs))
+	}
+	maker.task(10, 10, 4, u8(0), u64(pub))
+	if fs := list(taker, 11); len(fs) != 7 || string(fs[6].Bytes) != "Now public" {
+		t.Fatalf("after owner removed one: %v", fs)
+	}
+	// Publisher (title) content: none.
+	if r := taker.task(10, 12, 8, u8(0), bitbuf.Int(bitbuf.U32, 0), bitbuf.Int(bitbuf.U16, 20)); true {
+		if n, _ := r.U32(); n != 0 {
+			t.Fatalf("publisher list %d", n)
+		}
 	}
 }

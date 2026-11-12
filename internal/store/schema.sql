@@ -62,3 +62,15 @@ CREATE TABLE IF NOT EXISTS blocks (
     level      smallint NOT NULL,
     PRIMARY KEY (user_id, blocked_id)
 );
+
+CREATE TABLE IF NOT EXISTS storage_files (          -- lobby service 10 uploads (trades)
+    id          bigserial PRIMARY KEY,               -- file id the game refers to
+    owner       bigint NOT NULL,
+    name        text NOT NULL,
+    flag        boolean NOT NULL,
+    visible     boolean NOT NULL,
+    data        bytea NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    modified_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS storage_files_owner ON storage_files (owner, id);
