@@ -537,16 +537,17 @@ func TestStorage(t *testing.T) {
 	str := func(v string) bitbuf.Field { return bitbuf.Bytes(bitbuf.String, []byte(v)) }
 	blob := func(v []byte) bitbuf.Field { return bitbuf.Bytes(bitbuf.Blob, v) }
 
-	upload := func(name string, visible uint64, data []byte) uint64 {
-		r := maker.task(10, 1, 1, u8(0), b(1), str(name), b(visible), blob(data))
+	// The visibility bit is "private": 0 = public, as the retail game uploads a trade.
+	upload := func(name string, private uint64, data []byte) uint64 {
+		r := maker.task(10, 1, 1, u8(0), b(1), str(name), b(private), blob(data))
 		id, err := r.Field()
 		if err != nil || id.Type != bitbuf.U64 || id.Int == 0 {
 			t.Fatalf("upload result %v %v", id, err)
 		}
 		return id.Int
 	}
-	pub := upload("Champion", 1, []byte("superstar data"))
-	priv := upload("Secret", 0, []byte("hidden"))
+	pub := upload("Champion", 0, []byte("superstar data"))
+	priv := upload("Secret", 1, []byte("hidden"))
 
 	// Listing as the taker request did it: u8, u64 user, u32 offset, u16 count.
 	list := func(c *client, slot uint8) []bitbuf.Field {
@@ -559,7 +560,7 @@ func TestStorage(t *testing.T) {
 		return fs
 	}
 	if fs := list(taker, 2); len(fs) != 7 || fs[0].Int != pub || string(fs[6].Bytes) != "Champion" ||
-		fs[5].Int != makerID || fs[3].Int != 1 || fs[4].Int != 1 {
+		fs[5].Int != makerID || fs[3].Int != 1 || fs[4].Int != 0 {
 		t.Fatalf("taker sees %v", fs)
 	}
 	if fs := list(maker, 3); len(fs) != 14 {
@@ -579,10 +580,10 @@ func TestStorage(t *testing.T) {
 	}
 	// Only the owner can remove or rename.
 	taker.task(10, 6, 4, u8(0), u64(pub))
-	if _, code := taker.taskStatus(10, 7, 3, u8(0), u64(pub), str("Stolen"), b(1)); code == 0 {
+	if _, code := taker.taskStatus(10, 7, 3, u8(0), u64(pub), str("Stolen"), b(0)); code == 0 {
 		t.Fatal("rename by another player succeeded")
 	}
-	maker.task(10, 8, 3, u8(0), u64(priv), str("Now public"), b(1))
+	maker.task(10, 8, 3, u8(0), u64(priv), str("Now public"), b(0))
 	if fs := list(taker, 9); len(fs) != 14 {
 		t.Fatalf("after owner made it public: %d fields", len(fs))
 	}

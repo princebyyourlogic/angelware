@@ -12,16 +12,18 @@ import (
 // used for trades). Results (0x71090): tasks 1 and 5 carry one object, 7 and 8 a
 // u32 count and that many file infos.
 //
-//	1 upload(u8, bool flag, string name, bool visible, blob data)  -> u64 file id (0x712a0)
+//	1 upload(u8, bool flag, string name, bool private, blob data)  -> u64 file id (0x712a0)
 //	2 update data(u8, u64 file, blob data)
-//	3 update params(u8, u64 file, string name, bool visible)
+//	3 update params(u8, u64 file, string name, bool private)
 //	4 remove(u8, u64 file)
 //	5 download(u8, u64 file)                -> file info + blob data (0x701f8)
 //	7 list by user(u8, u64 user, u32 offset, u16 count) -> file infos
 //	8 list by publisher(u8, u32 offset, u16 count)      -> file infos (title content)
 //
-// File info (0x70470): u64 id, u32 created, u32 modified, bool flag, bool visible,
-// u64 owner, string name (<= 127). The two bools are stored as the upload sent them.
+// File info (0x70470): u64 id, u32 created, u32 modified, bool flag, bool private,
+// u64 owner, string name (<= 127). The flag is echoed as the upload sent it. The
+// visibility bit is 0 for public (as in DemonWare's BD_VISIBLE_PUBLIC = 0): a
+// trade uploads the superstar with 0 and the partner then lists and downloads it.
 const (
 	stUpload    = 1
 	stUpdate    = 2
@@ -49,7 +51,7 @@ func fileInfo(f store.File) []bitbuf.Field {
 		bitbuf.Int(bitbuf.U64, f.ID),
 		bitbuf.Int(bitbuf.U32, uint64(f.Created.Unix())),
 		bitbuf.Int(bitbuf.U32, uint64(f.Modified.Unix())),
-		boolField(f.Flag), boolField(f.Visible),
+		boolField(f.Flag), boolField(!f.Visible),
 		bitbuf.Int(bitbuf.U64, f.Owner),
 		bitbuf.Bytes(bitbuf.String, []byte(truncate(f.Name, 127))),
 	}
@@ -74,14 +76,14 @@ func (c *Conn) storage(ctx context.Context, t Task) []byte {
 	case stUpload:
 		flag, ok1 := arg(0, bitbuf.Bool)
 		name, ok2 := arg(1, bitbuf.String)
-		vis, ok3 := arg(2, bitbuf.Bool)
+		private, ok3 := arg(2, bitbuf.Bool)
 		data, ok4 := arg(3, bitbuf.Blob)
 		if !ok1 || !ok2 || !ok3 || !ok4 || len(data.Bytes) > maxFileSize {
 			c.log.Warn("upload refused", "fields", len(args), "size", len(data.Bytes))
 			return ErrorReply(t, storageError)
 		}
 		id, err := st.CreateFile(ctx, store.File{Owner: me, Name: string(name.Bytes), Flag: flag.Int != 0,
-			Visible: vis.Int != 0, Data: data.Bytes})
+			Visible: private.Int == 0, Data: data.Bytes})
 		if err != nil {
 			c.log.Error("save upload", "err", err)
 			return ErrorReply(t, storageError)
@@ -101,12 +103,12 @@ func (c *Conn) storage(ctx context.Context, t Task) []byte {
 	case stParams:
 		id, ok1 := arg(0, bitbuf.U64)
 		name, ok2 := arg(1, bitbuf.String)
-		vis, ok3 := arg(2, bitbuf.Bool)
+		private, ok3 := arg(2, bitbuf.Bool)
 		if !ok1 || !ok2 || !ok3 {
 			return ErrorReply(t, storageError)
 		}
 		n := string(name.Bytes)
-		if ok, err := st.UpdateFile(ctx, me, id.Int, nil, &n, vis.Int != 0); !ok || err != nil {
+		if ok, err := st.UpdateFile(ctx, me, id.Int, nil, &n, private.Int == 0); !ok || err != nil {
 			return ErrorReply(t, storageError)
 		}
 		return Reply(t, nil)
