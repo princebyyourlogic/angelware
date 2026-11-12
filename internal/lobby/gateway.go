@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/princebyyourlogic/angelware/internal/bitbuf"
 	"github.com/princebyyourlogic/angelware/internal/dwcrypto"
@@ -60,8 +61,14 @@ type Conn struct {
 	conn net.Conn
 	log  *slog.Logger
 	sess session.Session
-	out  chan []byte // frames for the writer goroutine
+	out  chan outbound // frames for the writer goroutine
 	done chan struct{}
+}
+
+type outbound struct {
+	frame  []byte
+	queued time.Time
+	task   *Task // correlation only; Args is not retained
 }
 
 // outQueue bounds a client's unsent frames; a client that stops reading loses
@@ -77,7 +84,7 @@ type Task struct {
 // Serve runs a gateway connection that opened with hello.
 func (s *Server) Serve(ctx context.Context, nc net.Conn, r *bufio.Reader, hello frame.Frame) {
 	c := &Conn{srv: s, conn: nc, log: s.Log.With("peer", nc.RemoteAddr().String()),
-		out: make(chan []byte, outQueue), done: make(chan struct{})}
+		out: make(chan outbound, outQueue), done: make(chan struct{})}
 	go c.writer()
 	defer close(c.done)
 	defer s.Matchmaking.DropOwner(c)
@@ -121,6 +128,7 @@ func (c *Conn) hello(f frame.Frame) error {
 }
 
 func (c *Conn) handle(ctx context.Context, f frame.Frame) error {
+	started := time.Now()
 	if !f.Encrypted {
 		c.log.Debug("plain gateway message ignored", "type", f.Type)
 		return nil
@@ -170,13 +178,23 @@ func (c *Conn) handle(ctx context.Context, f frame.Frame) error {
 	default:
 		reply = Reply(t, nil)
 	}
-	return c.send(msgTaskReply, reply)
+	correlation := Task{Service: t.Service, Slot: t.Slot, Seq: t.Seq, ID: t.ID}
+	err = c.enqueue(outbound{frame: frame.Plain(msgTaskReply, reply), task: &correlation})
+	c.log.Debug("task replied", "service", t.Service, "task", t.ID, "slot", t.Slot, "seq", t.Seq,
+		"elapsed_ms", float64(time.Since(started).Microseconds())/1000,
+		"reply_bytes", len(reply), "queue_depth", len(c.out), "err", err)
+	return err
 }
 
 // send queues a frame, waiting for room (task replies must not be lost).
 func (c *Conn) send(msgType uint8, payload []byte) error {
+	return c.enqueue(outbound{frame: frame.Plain(msgType, payload)})
+}
+
+func (c *Conn) enqueue(b outbound) error {
+	b.queued = time.Now()
 	select {
-	case c.out <- frame.Plain(msgType, payload):
+	case c.out <- b:
 		return nil
 	case <-c.done:
 		return net.ErrClosed
@@ -186,7 +204,7 @@ func (c *Conn) send(msgType uint8, payload []byte) error {
 // trySend queues a frame only if there is room right away.
 func (c *Conn) trySend(msgType uint8, payload []byte) bool {
 	select {
-	case c.out <- frame.Plain(msgType, payload):
+	case c.out <- outbound{frame: frame.Plain(msgType, payload), queued: time.Now()}:
 		return true
 	default:
 		return false
@@ -197,7 +215,16 @@ func (c *Conn) writer() {
 	for {
 		select {
 		case b := <-c.out:
-			if _, err := c.conn.Write(b); err != nil {
+			started := time.Now()
+			n, err := c.conn.Write(b.frame)
+			attrs := []any{"type", b.frame[3], "bytes", n,
+				"queue_ms", float64(started.Sub(b.queued).Microseconds()) / 1000,
+				"write_ms", float64(time.Since(started).Microseconds()) / 1000, "err", err}
+			if b.task != nil {
+				attrs = append(attrs, "service", b.task.Service, "task", b.task.ID, "slot", b.task.Slot, "seq", b.task.Seq)
+			}
+			c.log.Debug("gateway frame sent", attrs...)
+			if err != nil {
 				c.conn.Close()
 				return
 			}

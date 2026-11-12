@@ -43,7 +43,11 @@ def packets(path):
     data = Path(path).read_bytes()
     if len(data) < 24:
         return
-    order = '<' if data[:4] in (b'\xd4\xc3\xb2\xa1', b'\x4d\x3c\xb2\xa1') else '>'
+    formats = {b'\xd4\xc3\xb2\xa1': ('<', 1e6), b'\xa1\xb2\xc3\xd4': ('>', 1e6),
+               b'\x4d\x3c\xb2\xa1': ('<', 1e9), b'\xa1\xb2\x3c\x4d': ('>', 1e9)}
+    if data[:4] not in formats:
+        raise ValueError('expected classic pcap (microsecond or nanosecond timestamps)')
+    order, precision = formats[data[:4]]
     link = struct.unpack_from(order+'I', data, 20)[0]
     pos, seen = 24, set()
     while pos + 16 <= len(data):
@@ -73,10 +77,10 @@ def packets(path):
         if proto == 6 and len(segment) >= 20:
             sp, dp, seq = struct.unpack_from('!HHI',segment)
             hlen = (segment[12] >> 4)*4
-            yield sec+usec/1e6, 'tcp', (src,sp,dst,dp), seq, segment[hlen:]
+            yield sec+usec/precision, 'tcp', (src,sp,dst,dp), seq, segment[hlen:]
         elif proto == 17 and len(segment) >= 8:
             sp, dp, n = struct.unpack_from('!HHH',segment)
-            yield sec+usec/1e6, 'udp', (src,sp,dst,dp), None, segment[8:n]
+            yield sec+usec/precision, 'udp', (src,sp,dst,dp), None, segment[8:n]
 
 
 def analyze(path):

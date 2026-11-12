@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Save a private incident bundle on the machine running the beta Compose stack."""
+import argparse
+import datetime as dt
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import tarfile
+
+REPO = Path(__file__).resolve().parents[1]
+COMPOSE = ['docker', 'compose', '-f', 'compose.yaml', '-f', 'compose.beta.yaml']
+
+
+def timestamp(text):
+    value = dt.datetime.fromisoformat(text.replace('Z', '+00:00'))
+    if value.tzinfo is None:
+        raise argparse.ArgumentTypeError('include Z or a UTC offset, e.g. 2026-11-12T15:40:00-06:00')
+    return value.astimezone(dt.timezone.utc)
+
+
+def run(args):
+    return subprocess.check_output(args, cwd=REPO)
+
+
+def add(archive, name, data):
+    info = tarfile.TarInfo(name)
+    info.size, info.mode = len(data), 0o600
+    archive.addfile(info, io.BytesIO(data))
+
+
+def main():
+    now = dt.datetime.now(dt.timezone.utc)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--since', type=timestamp, default=now-dt.timedelta(minutes=30))
+    parser.add_argument('--until', type=timestamp, default=now)
+    parser.add_argument('--label', default='beta-report')
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    if args.since > args.until:
+        parser.error('--since must precede --until')
+    os.umask(0o077)
+    directory = REPO / 'work/beta-bundles'
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output = args.output or directory / f'incident-{now:%Y%m%dT%H%M%SZ}.tar.gz'
+    output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    since, until = args.since.isoformat(), args.until.isoformat()
+    ids = run(COMPOSE + ['ps', '-q', 'angelware', 'capture']).decode().splitlines()
+    if len(ids) != 2:
+        parser.error('both angelware and capture must be running with compose.beta.yaml')
+    inspections = json.loads(run(['docker', 'inspect', *ids]))
+    containers = []
+    for info in inspections:
+        env = dict(x.split('=', 1) for x in info['Config']['Env'])
+        safe_env = {k: v for k, v in env.items() if k.startswith('ANGELWARE_') and
+                    not any(word in k for word in ('PASSWORD', 'KEY', 'TOKEN', 'DATABASE', 'SECRET'))}
+        containers.append({'name': info['Name'], 'image': info['Image'],
+                           'revision': info['Config']['Labels'].get('org.opencontainers.image.revision'),
+                           'started': info['State']['StartedAt'], 'state': info['State']['Status'],
+                           'restarts': info['RestartCount'], 'settings': safe_env})
+    manifest = {'label': args.label, 'created': now.isoformat(), 'since': since, 'until': until,
+                'sensitive': True, 'scope': 'AngelWare game ports only; server-visible traffic',
+                'limits': 'Time-overlapping segments include surrounding traffic; live final record may be partial.',
+                'containers': containers}
+    count = 0
+    child = None
+    try:
+        with output.open('xb') as target, tarfile.open(fileobj=target, mode='w|gz') as archive:
+            add(archive, 'manifest.json', (json.dumps(manifest, indent=2)+'\n').encode())
+            add(archive, 'application.log', run(COMPOSE + ['logs', '--no-color', '--timestamps',
+                                                        '--since', since, '--until', until, 'angelware']))
+            add(archive, 'capture.log', run(COMPOSE + ['logs', '--no-color', '--timestamps',
+                                                    '--since', since, '--until', until, 'capture']))
+            add(archive, 'capture-status.json', run(COMPOSE + ['exec', '-T', 'capture',
+                                                             'cat', '/captures/status.json']))
+            add(archive, 'resources.txt', run(['docker', 'stats', '--no-stream',
+                                             '--format', '{{json .}}', *ids]))
+            for name in ('loadavg', 'meminfo', 'net/snmp', 'net/netstat'):
+                path = Path('/proc') / name
+                if path.exists():
+                    add(archive, 'system/'+name.replace('/', '-')+'.txt', path.read_bytes())
+            command = COMPOSE + ['exec', '-T', 'capture', 'python', '/app/capture.py', 'export',
+                                 '--since', str(args.since.timestamp()), '--until', str(args.until.timestamp())]
+            child = subprocess.Popen(command, stdout=subprocess.PIPE, cwd=REPO)
+            with tarfile.open(fileobj=child.stdout, mode='r|') as packets:
+                for member in packets:
+                    if not member.isfile() or Path(member.name).name != member.name or not member.name.endswith('.pcap'):
+                        raise ValueError('unexpected member in capture export')
+                    stream = packets.extractfile(member)
+                    member.name = 'packets/'+member.name
+                    member.mode, member.uid, member.gid = 0o600, 0, 0
+                    archive.addfile(member, stream)
+                    count += 1
+            child.stdout.close()
+            if child.wait() != 0:
+                raise RuntimeError('capture export failed')
+            add(archive, 'capture-selection.json', json.dumps({'segments': count}).encode())
+    except BaseException:
+        if child is not None and child.poll() is None:
+            child.terminate()
+            child.wait()
+        # Never remove an existing bundle when exclusive creation failed.
+        if 'target' in locals():
+            output.unlink(missing_ok=True)
+        raise
+    print(f'{output} ({count} capture segments; private)')
+
+
+if __name__ == '__main__':
+    main()

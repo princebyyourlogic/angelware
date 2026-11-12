@@ -219,6 +219,10 @@ internal address (192.0.2.100), so the game's LAN connection goes nowhere.
 
 ### Accounts and privacy
 
+For hosted beta testing, [continuous packet capture and incident bundles](docs/beta-diagnostics.md)
+provide private, rotated PCAPs, debug logs, and task/reply timing using
+`compose.beta.yaml`. The default capture window is up to 72 hours within 8 GiB.
+
 Players create their account from the game's online menu. The game never sends a plain password; it sends
 a hash, which the protocol then uses as the login key. That hash is stored in the `password_tiger` column
 and works like a password for this game, so keep the database and its backups private. angelware stores

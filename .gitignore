@@ -6,3 +6,5 @@ work/
 ghidra/
 tools/ghidra_*.sh
 tools/__pycache__/
+ops/capture/__pycache__/
+scripts/__pycache__/
