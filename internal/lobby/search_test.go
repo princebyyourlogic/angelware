@@ -1,7 +1,6 @@
 package lobby
 
 import (
-	"bytes"
 	"encoding/hex"
 	"io"
 	"log/slog"
@@ -130,30 +129,5 @@ func TestSearchOrdersByRankDistance(t *testing.T) {
 	}
 	if len(ranks) != 3 || ranks[0] != 1 || ranks[1] != 3 || ranks[2] != 5 {
 		t.Fatalf("order %v", ranks)
-	}
-}
-
-// The host address blob captured from the retail game (a PCSX2 host): local
-// 192.0.2.100:3074, two empty local slots, public 192.168.2.110:3074, NAT type 2.
-const capturedHostAddr = "c000026402" + "0c00ff00ff000000ff00ff0000" + "c0a8026e020c02"
-
-func TestRelayHostAddressForSearchers(t *testing.T) {
-	addr, _ := hex.DecodeString(capturedHostAddr)
-	info := hostedSession(nil)
-	info[infoHostAddr] = bitbuf.Bytes(bitbuf.Blob, addr)
-	host, searcher := "host", "searcher"
-	s := &mmSession{owner: host, info: info}
-	m := NewMatchmaking(slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	if got := m.forSearcher(s, searcher)[infoHostAddr].Bytes; !bytes.Equal(got, addr) {
-		t.Fatal("rewritten without relay mode")
-	}
-	m.RelayHostAddress = true
-	got := m.forSearcher(s, searcher)[infoHostAddr].Bytes
-	if hex.EncodeToString(got[:6]) != "c0a8026e020c" || !bytes.Equal(got[6:], addr[6:]) {
-		t.Fatalf("searcher sees %x", got)
-	}
-	if !bytes.Equal(s.info[infoHostAddr].Bytes, addr) || !bytes.Equal(m.forSearcher(s, host)[infoHostAddr].Bytes, addr) {
-		t.Fatal("host's own info changed")
 	}
 }

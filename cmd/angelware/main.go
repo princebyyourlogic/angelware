@@ -156,12 +156,10 @@ func run(cfg config, log *slog.Logger) error {
 	defer st.Close()
 
 	sessions := session.NewRegistry()
-	mm := lobby.NewMatchmaking(log.With("svc", "matchmaking"))
-	mm.RelayHostAddress = cfg.STUN[0].Mode == stun.Relay // svr2007
 	tcp := &server.TCP{
 		Auth: &auth.Service{Store: st, Sessions: sessions, Mode: cfg.AuthMode, Log: log.With("svc", "auth")},
 		Lobby: &lobby.Server{Store: st, Sessions: sessions, Log: log.With("svc", "lobby"),
-			Matchmaking: mm},
+			Matchmaking: lobby.NewMatchmaking(log.With("svc", "matchmaking"))},
 		Log: log,
 	}
 	ln, err := net.Listen("tcp4", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
