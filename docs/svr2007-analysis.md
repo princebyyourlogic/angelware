@@ -37,14 +37,11 @@ obfuscated with a repeating 11-byte additive key** over the printable characters
 3854 entries in the same form at file offset 0x2502d8, which resolves 49 of the imports. Ghidra's
 bundled `demangler_gnu_v2_24 -s gnu` demangles them.
 
-## Ghidra project
+## Addresses
 
-`tools/ghidra_import.sh` builds `ghidra/angelware.gpr` (program `/LBYM.bin`, `r5900:LE:32:default`,
-base 0, code up to 0xce040, imports as named stubs in an `EXTERN` block at 0x2000000). It applies
-all 469 exported symbols with namespaces, names 76 SDK functions from `bdClass::method` assert
-text (`ghidra/NameFromAsserts.java`), and adds the hand names in `ghidra/LBYM.names.tsv`. To
-inspect, run `ghidra/Decompile.java` (addresses, name substrings or `refs:TEXT`) and
-`ghidra/ListFuncs.java START END` headless with `-process LBYM.bin -noanalysis -readOnly`.
+Addresses in these notes are offsets into the decompressed `LBYM` overlay loaded at base 0 in Ghidra
+(`r5900:LE:32:default`, code up to 0xce040), with the 469 exported symbols from `tools/snr2.py`
+applied. The Ghidra project and scripts are kept outside the repository.
 
 ### Game-facing API: `nLobbyManager::CLobbyManager` (0xb3a8..0x10ad8)
 

@@ -1,7 +1,7 @@
 disc/
 work/
 *.iso
-ghidra/*.gpr
-ghidra/*.rep/
-ghidra/*.lock*
 .env
+# Ghidra project and scripts (local reverse-engineering only)
+ghidra/
+tools/ghidra_*.sh

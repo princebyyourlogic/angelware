@@ -139,10 +139,10 @@ The PostgreSQL test in `internal/store` runs when `ANGELWARE_TEST_DATABASE_URL` 
 | `internal/stun` | NAT detection and connecting players |
 | `internal/store` | PostgreSQL (and in-memory storage for tests) |
 | `internal/bitbuf`, `frame`, `dwcrypto`, `session` | DemonWare's wire format, encryption and login tickets |
-| `tools/`, `ghidra/` | Reverse-engineering helpers. They need your own disc and are not used by the server |
+| `tools/` | Disc extraction helpers for reverse engineering. They need your own disc and are not used by the server |
 
 ### Game files
 
 This repository contains no game code, disc images or assets. The reverse-engineering tools read files
-from your own disc into `disc/` and `work/`, which are ignored by git, along with the Ghidra project.
+from your own disc into `disc/` and `work/`, which are ignored by git.
 Please keep it that way in contributions.
