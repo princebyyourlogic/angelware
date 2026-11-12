@@ -40,6 +40,7 @@ const (
 	svcProfiles    = 8
 	svcFriends     = 9
 	svcStorage     = 10
+	svcTitle       = 12
 )
 
 type Server struct {
@@ -164,6 +165,8 @@ func (c *Conn) handle(ctx context.Context, f frame.Frame) error {
 		reply = c.friends(ctx, t)
 	case svcStorage:
 		reply = c.storage(ctx, t)
+	case svcTitle:
+		reply = c.title(t)
 	default:
 		reply = Reply(t, nil)
 	}

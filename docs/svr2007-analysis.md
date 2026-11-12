@@ -92,8 +92,8 @@ markers (3 = u8, 8 = u32, 12 = ranged u32). Auth messages are untyped. Lobby tas
 | Lobby call | Task | Request | Reply | Body |
 | --- | --- | --- | --- | --- |
 | `CreateAccount(name, pw)` | 10 | 0x00 | 0x01 | seed, title, 64-bit id (0), 0x60-byte block `{0xDEADBDEF, name[64], Tiger(pw)}` encrypted with the fixed key `DEADBEEF`x4 + 8 zero bytes. Reply is status only |
-| (task 11) | 11 | 0x02 | 0x03 | seed, title, Tiger(name)[:8], `{magic, Tiger(x)}` under Tiger(pw) |
-| (task 12) | 12 | 0x06 | 0x07 | |
+| change password (`0xc3e8`) | 11 | 0x02 | 0x03 | seed, title, Tiger(name)[:8], 0x20-byte `{magic, Tiger(new)}` under Tiger(old) |
+| delete account (`0xc548`) | 12 | 0x06 | 0x07 | seed, title, Tiger(name)[:8], 8-byte `{magic}` under Tiger(password) |
 | `AuthAccount(name, pw)` | 13 | 0x0A | 0x0B | seed, title, Tiger(name)[:8]. **No encrypted part** |
 
 Ticket replies 0x0B and 0x0D carry `u32 seed`, a 0x400-bit block decrypted with Tiger(pw), and a 0x400-bit

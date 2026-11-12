@@ -599,3 +599,55 @@ func TestStorage(t *testing.T) {
 		}
 	}
 }
+
+// changePassword and deleteAccount build auth requests 0x02 and 0x06 like the game.
+func changePassword(name, oldPw, newPw string) []byte {
+	block := append([]byte{0xde, 0xad, 0xbd, 0xef}, dwcrypto.Tiger([]byte(newPw))...)
+	block = append(block, make([]byte, 0x20-len(block))...)
+	enc, _ := dwcrypto.Encrypt(dwcrypto.Tiger([]byte(oldPw)), dwcrypto.SeedIV(3), block)
+	id := binary.LittleEndian.AppendUint64(nil, dwcrypto.UserID([]byte(name)))
+	return frame.Plain(0x02, bitbuf.NewWriter(false).U32(3).U32(auth.TitleID).Raw(id).Raw(enc).Bytes())
+}
+
+func deleteAccount(name, pw string) []byte {
+	block := []byte{0xde, 0xad, 0xbd, 0xef, 0, 0, 0, 0}
+	enc, _ := dwcrypto.Encrypt(dwcrypto.Tiger([]byte(pw)), dwcrypto.SeedIV(4), block)
+	id := binary.LittleEndian.AppendUint64(nil, dwcrypto.UserID([]byte(name)))
+	return frame.Plain(0x06, bitbuf.NewWriter(false).U32(4).U32(auth.TitleID).Raw(id).Raw(enc).Bytes())
+}
+
+func TestChangePasswordAndDeleteAccount(t *testing.T) {
+	s, st := newTCP(auth.Verify)
+	dial(t, s).roundTrip(signup("pat", "old"))
+	if f := dial(t, s).roundTrip(changePassword("pat", "wrong", "new")); f.Type != 3 {
+		t.Fatalf("reply type %d", f.Type)
+	} else if _, code := status(t, f); code == 700 {
+		t.Fatal("password changed without the old password")
+	}
+	if _, code := status(t, dial(t, s).roundTrip(changePassword("pat", "old", "new"))); code != 700 {
+		t.Fatalf("change password %d", code)
+	}
+	loginAndOpenGateway(t, s, "pat", "new") // the new password decrypts the login ticket
+
+	if _, code := status(t, dial(t, s).roundTrip(deleteAccount("pat", "old"))); code == 700 {
+		t.Fatal("deleted with the old password")
+	}
+	if f := dial(t, s).roundTrip(deleteAccount("pat", "new")); f.Type != 7 {
+		t.Fatalf("delete reply type %d", f.Type)
+	} else if _, code := status(t, f); code != 700 {
+		t.Fatalf("delete %d", code)
+	}
+	if _, err := st.Account(context.Background(), dwcrypto.UserID([]byte("pat"))); err == nil {
+		t.Fatal("account still there")
+	}
+}
+
+func TestVerifyString(t *testing.T) {
+	s, _ := newTCP(auth.Verify)
+	dial(t, s).roundTrip(signup("vic", "pw"))
+	c := loginAndOpenGateway(t, s, "vic", "pw")
+	r := c.task(12, 1, 1, u8(0), bitbuf.Bytes(bitbuf.String, []byte("My Belt")))
+	if f, err := r.Field(); err != nil || f.Type != bitbuf.Bool || f.Int != 1 {
+		t.Fatalf("verify string %v %v", f, err)
+	}
+}

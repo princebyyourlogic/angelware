@@ -44,6 +44,9 @@ type Store interface {
 	CreateAccount(ctx context.Context, a Account) error
 	Account(ctx context.Context, userID uint64) (Account, error)
 	TouchLogin(ctx context.Context, userID uint64) error
+	SetPassword(ctx context.Context, userID uint64, passwordTiger []byte) error
+	// DeleteAccount removes the account and everything it owns.
+	DeleteAccount(ctx context.Context, userID uint64) error
 	PublicProfile(ctx context.Context, userID uint64) (PublicProfile, error)
 	SetPublicProfile(ctx context.Context, userID uint64, p PublicProfile) error
 	PrivateProfile(ctx context.Context, userID uint64) (PrivateProfile, error)
@@ -94,6 +97,59 @@ func (m *Memory) Account(_ context.Context, id uint64) (Account, error) {
 }
 
 func (m *Memory) TouchLogin(context.Context, uint64) error { return nil }
+
+func (m *Memory) SetPassword(_ context.Context, id uint64, pw []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.accounts[id]
+	if !ok {
+		return ErrNotFound
+	}
+	a.PasswordTiger = pw
+	m.accounts[id] = a
+	return nil
+}
+
+func (m *Memory) DeleteAccount(_ context.Context, id uint64) error {
+	m.mu.Lock()
+	delete(m.accounts, id)
+	delete(m.public, id)
+	delete(m.private, id)
+	for k := range m.stats {
+		if uint64(k[0]) == id {
+			delete(m.stats, k)
+		}
+	}
+	for k, f := range m.f.files {
+		if f.Owner == id {
+			delete(m.f.files, k)
+		}
+	}
+	m.mu.Unlock()
+	m.s.mu.Lock()
+	defer m.s.mu.Unlock()
+	for k, msg := range m.s.mail {
+		if msg.To == id || msg.From == id {
+			delete(m.s.mail, k)
+		}
+	}
+	for k := range m.s.requests {
+		if k[0] == id || k[1] == id {
+			delete(m.s.requests, k)
+		}
+	}
+	for k := range m.s.friends {
+		if k[0] == id || k[1] == id {
+			delete(m.s.friends, k)
+		}
+	}
+	for k := range m.s.blocks {
+		if k[0] == id || k[1] == id {
+			delete(m.s.blocks, k)
+		}
+	}
+	return nil
+}
 
 func (m *Memory) PublicProfile(_ context.Context, id uint64) (PublicProfile, error) {
 	m.mu.Lock()

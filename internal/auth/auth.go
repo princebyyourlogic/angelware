@@ -5,7 +5,13 @@
 //
 //	0x00 CreateAccount: 64-bit id (0), 0x60-byte block {u32 0xDEADBDEF, name[64],
 //	     Tiger(password)}, 3DES-CBC with the fixed key DEADBEEF x4 + 8 zero bytes.
+//	0x02 change password: 64-bit id, 0x20-byte block {magic, Tiger(new password)}
+//	     encrypted with Tiger(old password) (LBYM buildMsg 0x73608, lobby 0xc3e8).
+//	0x06 delete account: 64-bit id, 8-byte block {magic} encrypted with
+//	     Tiger(password) (0x73a88, lobby 0xc548).
 //	0x0A AuthAccount: 64-bit id = Tiger(name)[:8], nothing encrypted.
+//
+// For 0x02 and 0x06 the block decrypting to the magic proves the password.
 //
 // Login replies carry a 0x80-byte ticket block (magic, ids, name, session key) and
 // an opaque 0x80-byte lobby ticket. Reply 0x0B encrypts the block with the
@@ -40,10 +46,12 @@ const (
 	// error numbering for these cases is not known, so one value is used.
 	statusFailed = 701
 
-	reqCreateAccount = 0x00
-	reqAuthAccount   = 0x0A
-	replyTicketKeyed = 0x0B
-	replyTicketPlain = 0x11
+	reqCreateAccount  = 0x00
+	reqChangePassword = 0x02
+	reqDeleteAccount  = 0x06
+	reqAuthAccount    = 0x0A
+	replyTicketKeyed  = 0x0B
+	replyTicketPlain  = 0x11
 )
 
 var (
@@ -113,6 +121,8 @@ func (s *Service) handle(ctx context.Context, log *slog.Logger, f frame.Frame) (
 			return nil, err
 		}
 		return s.login(ctx, log, binary.LittleEndian.Uint64(raw))
+	case reqChangePassword, reqDeleteAccount:
+		return s.accountChange(ctx, log, f.Type, seed, r)
 	default:
 		log.Info("auth request not implemented, answering OK", "type", f.Type, "seed", seed)
 		return status(f.Type+1, statusOK), nil
@@ -151,6 +161,48 @@ func (s *Service) createAccount(ctx context.Context, log *slog.Logger, seed uint
 		return nil, err
 	}
 	log.Info("account created", "name", acct.Name, "user", fmt.Sprintf("%016x", acct.UserID))
+	return reply(statusOK)
+}
+
+// accountChange handles change password and delete account: both prove the
+// current password by encrypting a block with it.
+func (s *Service) accountChange(ctx context.Context, log *slog.Logger, msgType uint8, seed uint32,
+	r *bitbuf.Reader) ([]byte, error) {
+	reply := func(code uint32) ([]byte, error) { return status(msgType+1, code), nil }
+	raw, err := r.Raw(8)
+	if err != nil {
+		return nil, err
+	}
+	size := 0x20
+	if msgType == reqDeleteAccount {
+		size = 8
+	}
+	enc, err := r.Raw(size)
+	if err != nil {
+		return nil, err
+	}
+	userID := binary.LittleEndian.Uint64(raw)
+	acct, err := s.Store.Account(ctx, userID)
+	if err != nil {
+		log.Info("account change for unknown account", "type", msgType, "user", fmt.Sprintf("%016x", userID))
+		return reply(statusFailed)
+	}
+	block, err := dwcrypto.Decrypt(acct.PasswordTiger, dwcrypto.SeedIV(seed), enc)
+	if err != nil || !bytes.Equal(block[:4], ticketMagic) {
+		log.Info("account change with wrong password", "type", msgType, "name", acct.Name)
+		return reply(statusFailed)
+	}
+	if msgType == reqChangePassword {
+		if err := s.Store.SetPassword(ctx, userID, bytes.Clone(block[4:28])); err != nil {
+			return nil, err
+		}
+		log.Info("password changed", "name", acct.Name)
+		return reply(statusOK)
+	}
+	if err := s.Store.DeleteAccount(ctx, userID); err != nil {
+		return nil, err
+	}
+	log.Info("account deleted", "name", acct.Name, "user", fmt.Sprintf("%016x", userID))
 	return reply(statusOK)
 }
 

@@ -183,4 +183,28 @@ func TestPostgres(t *testing.T) {
 	if _, err := p.File(ctx, fid); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("deleted file %v", err)
 	}
+
+	// Password change, then deleting the account removes what it owns.
+	if err := p.SetPassword(ctx, id, []byte("newhash-newhash-newhash!")); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := p.Account(ctx, id); string(a.PasswordTiger) != "newhash-newhash-newhash!" {
+		t.Fatalf("password not changed: %q", a.PasswordTiger)
+	}
+	p.WriteStats(ctx, id, StatsRow{Board: 1, Values: []int32{}})
+	p.AddFriendship(ctx, id, other)
+	p.CreateFile(ctx, File{Owner: id, Name: "x", Data: []byte{1}})
+	if err := p.DeleteAccount(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Account(ctx, id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("account after delete: %v", err)
+	}
+	var left int
+	p.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM stats WHERE user_id = $1) +
+		(SELECT count(*) FROM friends WHERE user_id = $1 OR friend_id = $1) +
+		(SELECT count(*) FROM storage_files WHERE owner = $1)`, int64(id)).Scan(&left)
+	if left != 0 {
+		t.Fatalf("%d rows left after delete", left)
+	}
 }

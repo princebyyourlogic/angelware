@@ -66,6 +66,35 @@ func (p *Postgres) TouchLogin(ctx context.Context, id uint64) error {
 	return err
 }
 
+func (p *Postgres) SetPassword(ctx context.Context, id uint64, pw []byte) error {
+	_, err := p.pool.Exec(ctx, `UPDATE accounts SET password_tiger = $2 WHERE user_id = $1`, int64(id), pw)
+	return err
+}
+
+// DeleteAccount removes the account and everything it owns, in one transaction.
+func (p *Postgres) DeleteAccount(ctx context.Context, id uint64) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, q := range []string{
+		`DELETE FROM accounts WHERE user_id = $1`,
+		`DELETE FROM profiles WHERE user_id = $1`,
+		`DELETE FROM stats WHERE user_id = $1`,
+		`DELETE FROM storage_files WHERE owner = $1`,
+		`DELETE FROM mailbox WHERE to_id = $1 OR from_id = $1`,
+		`DELETE FROM friend_requests WHERE from_id = $1 OR to_id = $1`,
+		`DELETE FROM friends WHERE user_id = $1 OR friend_id = $1`,
+		`DELETE FROM blocks WHERE user_id = $1 OR blocked_id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, q, int64(id)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (p *Postgres) PublicProfile(ctx context.Context, id uint64) (PublicProfile, error) {
 	var pp PublicProfile
 	err := p.pool.QueryRow(ctx,
