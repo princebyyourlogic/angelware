@@ -10,6 +10,8 @@ import (
 // Friends, lobby service 9 (senders LBYM 0x60a90..0x61920, lobby tasks 0x15..0x21):
 //
 //	1  ProposeFriend(u8, u64 user[, blob, u32])        -> message 1 to them
+//	   (ignored between friends; repeats are not re-sent; if they already asked
+//	   us, it accepts their request instead)
 //	13 WithdrawProposalFriend(u8, u64 user)             -> message 4
 //	2  AcceptProposeFriend(u8, u64 user)                -> message 2
 //	3  RejectProposeFriend(u8, u64 user)                -> message 3
@@ -92,10 +94,29 @@ func (c *Conn) friends(ctx context.Context, t Task) []byte {
 			c.log.Info("friend request to a player who blocked us dropped")
 			return Reply(t, nil)
 		}
+		if already, err := st.AreFriends(ctx, me, other); already || err != nil {
+			fail("check friendship", err)
+			c.log.Info("friend request between existing friends ignored")
+			return Reply(t, nil)
+		}
+		// They already asked us: treat our request as accepting theirs.
+		if crossed, err := st.RemoveFriendRequest(ctx, other, me); crossed {
+			fail("save friendship", st.AddFriendship(ctx, me, other))
+			c.srv.Notify(ctx, note(other, msgFriendAccepted))
+			c.log.Info("crossed friend requests: now friends")
+			return Reply(t, nil)
+		} else {
+			fail("check reverse request", err)
+		}
 		m := note(other, msgFriendRequest)
 		m.Data = firstBlob(args)
-		fail("save friend request", st.AddFriendRequest(ctx, me, other, m.Data))
-		c.srv.Notify(ctx, m)
+		created, err := st.AddFriendRequest(ctx, me, other, m.Data)
+		fail("save friend request", err)
+		if created {
+			c.srv.Notify(ctx, m)
+		} else {
+			c.log.Info("repeated friend request not sent again")
+		}
 	case frWithdraw:
 		if ok, err := st.RemoveFriendRequest(ctx, me, other); ok {
 			c.srv.Notify(ctx, note(other, msgFriendCanceled))

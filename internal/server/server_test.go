@@ -352,6 +352,14 @@ func TestFriendsMailboxAndPresence(t *testing.T) {
 		t.Fatalf("friend list %d %v", n, friends)
 	}
 
+	// Already friends: a request back is ignored, nothing reaches the host.
+	guest.task(9, 11, 1, u8(0), u64(hostID))
+	select {
+	case f := <-host.pushes:
+		t.Fatalf("request between friends was delivered: %x", f.Payload)
+	case <-time.After(100 * time.Millisecond):
+	}
+
 	// Friend message and an invite with its join information, answered.
 	host.task(9, 8, 12, u8(0), u64(guestID), bitbuf.Int(bitbuf.U32, 4),
 		bitbuf.Bytes(bitbuf.Blob, []byte("gg")), bitbuf.Int(bitbuf.U32, 0))
@@ -377,5 +385,34 @@ func TestFriendsMailboxAndPresence(t *testing.T) {
 	loginAndOpenGateway(t, s, "guest", "guestpw")
 	if m := host.push(); m[0].Int != 9 || m[5].Int != guestID {
 		t.Fatalf("online push %v", m)
+	}
+}
+
+func TestRepeatedAndCrossedFriendRequests(t *testing.T) {
+	s, st := newTCP(auth.Verify)
+	for _, n := range []string{"ann", "bob"} {
+		dial(t, s).roundTrip(signup(n, n+"pw"))
+	}
+	annID, bobID := dwcrypto.UserID([]byte("ann")), dwcrypto.UserID([]byte("bob"))
+	ann := loginAndOpenGateway(t, s, "ann", "annpw")
+	bob := loginAndOpenGateway(t, s, "bob", "bobpw")
+	bob.task(9, 1, 1, u8(0), u64(annID))
+	ann.push()                           // the request
+	bob.task(9, 2, 1, u8(0), u64(annID)) // repeat: not delivered twice
+	select {
+	case <-ann.pushes:
+		t.Fatal("repeated request delivered again")
+	case <-time.After(100 * time.Millisecond):
+	}
+	// Ann asks Bob back instead of accepting: that makes them friends.
+	ann.task(9, 3, 1, u8(0), u64(bobID))
+	if m := bob.push(); m[0].Int != 2 || m[5].Int != annID {
+		t.Fatalf("crossed request should accept: %v", m)
+	}
+	if ok, _ := st.AreFriends(context.Background(), annID, bobID); !ok {
+		t.Fatal("not friends after crossed requests")
+	}
+	if reqs, _ := st.FriendRequestsTo(context.Background(), annID); len(reqs) != 0 {
+		t.Fatalf("request left behind: %v", reqs)
 	}
 }

@@ -34,11 +34,13 @@ type Social interface {
 	Inbox(ctx context.Context, user uint64, offset, limit int) ([]Message, error)
 	Ack(ctx context.Context, user, messageID uint64) error
 
-	AddFriendRequest(ctx context.Context, from, to uint64, data []byte) error
+	// AddFriendRequest reports whether the request is new (a repeat is not stored twice).
+	AddFriendRequest(ctx context.Context, from, to uint64, data []byte) (bool, error)
 	// RemoveFriendRequest reports whether a request existed.
 	RemoveFriendRequest(ctx context.Context, from, to uint64) (bool, error)
 	FriendRequestsTo(ctx context.Context, to uint64) ([]Contact, error)
 	AddFriendship(ctx context.Context, a, b uint64) error
+	AreFriends(ctx context.Context, a, b uint64) (bool, error)
 	RemoveFriendship(ctx context.Context, a, b uint64) error
 	Friends(ctx context.Context, user uint64) ([]Contact, error)
 	SetBlock(ctx context.Context, user, target uint64, level uint8) error
@@ -100,11 +102,14 @@ func (m *Memory) Ack(_ context.Context, user, id uint64) error {
 	return nil
 }
 
-func (m *Memory) AddFriendRequest(_ context.Context, from, to uint64, data []byte) error {
+func (m *Memory) AddFriendRequest(_ context.Context, from, to uint64, data []byte) (bool, error) {
 	m.s.mu.Lock()
 	defer m.s.mu.Unlock()
+	if _, ok := m.s.requests[[2]uint64{from, to}]; ok {
+		return false, nil
+	}
 	m.s.requests[[2]uint64{from, to}] = data
-	return nil
+	return true, nil
 }
 
 func (m *Memory) RemoveFriendRequest(_ context.Context, from, to uint64) (bool, error) {
@@ -132,6 +137,12 @@ func (m *Memory) AddFriendship(_ context.Context, a, b uint64) error {
 	defer m.s.mu.Unlock()
 	m.s.friends[[2]uint64{a, b}], m.s.friends[[2]uint64{b, a}] = true, true
 	return nil
+}
+
+func (m *Memory) AreFriends(_ context.Context, a, b uint64) (bool, error) {
+	m.s.mu.Lock()
+	defer m.s.mu.Unlock()
+	return m.s.friends[[2]uint64{a, b}], nil
 }
 
 func (m *Memory) RemoveFriendship(_ context.Context, a, b uint64) error {
@@ -231,12 +242,12 @@ func (p *Postgres) Ack(ctx context.Context, user, id uint64) error {
 	return err
 }
 
-func (p *Postgres) AddFriendRequest(ctx context.Context, from, to uint64, data []byte) error {
-	_, err := p.pool.Exec(ctx, `
+func (p *Postgres) AddFriendRequest(ctx context.Context, from, to uint64, data []byte) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
 		INSERT INTO friend_requests (from_id, to_id, data) VALUES ($1, $2, $3)
-		ON CONFLICT (from_id, to_id) DO UPDATE SET data = $3, created_at = now()`,
+		ON CONFLICT (from_id, to_id) DO NOTHING`,
 		int64(from), int64(to), data)
-	return err
+	return tag.RowsAffected() > 0, err
 }
 
 func (p *Postgres) RemoveFriendRequest(ctx context.Context, from, to uint64) (bool, error) {
@@ -256,6 +267,13 @@ func (p *Postgres) AddFriendship(ctx context.Context, a, b uint64) error {
 		INSERT INTO friends (user_id, friend_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING`,
 		int64(a), int64(b))
 	return err
+}
+
+func (p *Postgres) AreFriends(ctx context.Context, a, b uint64) (bool, error) {
+	var ok bool
+	err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM friends WHERE user_id = $1 AND friend_id = $2)`,
+		int64(a), int64(b)).Scan(&ok)
+	return ok, err
 }
 
 func (p *Postgres) RemoveFriendship(ctx context.Context, a, b uint64) error {

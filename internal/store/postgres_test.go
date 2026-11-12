@@ -76,8 +76,11 @@ func TestPostgres(t *testing.T) {
 	p.pool.Exec(ctx, `DELETE FROM friends WHERE user_id = $1 OR friend_id = $1`, int64(id))
 	p.pool.Exec(ctx, `DELETE FROM blocks WHERE user_id = $1`, int64(other))
 	p.pool.Exec(ctx, `DELETE FROM mailbox WHERE to_id = $1`, int64(other))
-	if err := p.AddFriendRequest(ctx, id, other, []byte("hi")); err != nil {
-		t.Fatal(err)
+	if created, err := p.AddFriendRequest(ctx, id, other, []byte("hi")); !created || err != nil {
+		t.Fatalf("first request %v %v", created, err)
+	}
+	if created, err := p.AddFriendRequest(ctx, id, other, nil); created || err != nil {
+		t.Fatalf("repeated request stored again: %v %v", created, err)
 	}
 	if reqs, err := p.FriendRequestsTo(ctx, other); err != nil || len(reqs) != 1 || reqs[0].Name != "pgtest" {
 		t.Fatalf("requests %+v %v", reqs, err)
@@ -90,6 +93,9 @@ func TestPostgres(t *testing.T) {
 	}
 	if fr, err := p.Friends(ctx, other); err != nil || len(fr) != 1 || fr[0].UserID != id {
 		t.Fatalf("friends %+v %v", fr, err)
+	}
+	if ok, err := p.AreFriends(ctx, other, id); !ok || err != nil {
+		t.Fatalf("AreFriends %v %v", ok, err)
 	}
 	p.RemoveFriendship(ctx, other, id)
 	if fr, _ := p.Friends(ctx, id); len(fr) != 0 {
