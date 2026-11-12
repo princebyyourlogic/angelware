@@ -148,6 +148,7 @@ func (q searchQuery) matches(info []bitbuf.Field) (bool, int32) {
 }
 
 type candidate struct {
+	info     []bitbuf.Field
 	s        *mmSession
 	distance int32
 	order    uint64
@@ -159,17 +160,18 @@ func (m *Matchmaking) search(owner any, q searchQuery) [][]bitbuf.Field {
 	if limit <= 0 || limit > mmMaxResults {
 		limit = mmMaxResults
 	}
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var found []candidate
 	for _, s := range m.sessions {
 		if s.owner == owner {
 			continue
 		}
-		if ok, d := q.matches(s.info); ok {
-			found = append(found, candidate{s, d, s.order})
+		info := append([]bitbuf.Field(nil), s.info...)
+		if ok, d := q.matches(info); ok {
+			found = append(found, candidate{info, s, d, s.order})
 		}
 	}
-	m.mu.RUnlock()
 	sort.Slice(found, func(i, j int) bool {
 		if found[i].distance != found[j].distance {
 			return found[i].distance < found[j].distance
@@ -178,7 +180,10 @@ func (m *Matchmaking) search(owner any, q searchQuery) [][]bitbuf.Field {
 	})
 	out := make([][]bitbuf.Field, 0, min(len(found), limit))
 	for _, c := range found[:min(len(found), limit)] {
-		out = append(out, c.s.info)
+		if m.ObserveConnectivity != nil {
+			c.s.noteDisclosure(owner)
+		}
+		out = append(out, c.info)
 	}
 	return out
 }

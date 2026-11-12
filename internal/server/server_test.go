@@ -22,6 +22,25 @@ import (
 
 var signupKey = append(bytes.Repeat([]byte{0xde, 0xad, 0xbe, 0xef}, 4), make([]byte, 8)...)
 
+func TestSuccessfulAuthObservesPublicSeed(t *testing.T) {
+	s, _ := newTCP(auth.Open)
+	observed := make(chan uint32, 1)
+	s.Auth.ObserveLogin = func(_ net.Addr, seed uint32) { observed <- seed }
+	c := dial(t, s)
+	w := bitbuf.NewWriter(false).U32(0x12345678).U32(auth.TitleID).Raw(make([]byte, 8))
+	if _, err := c.conn.Write(frame.Plain(0x0a, w.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case seed := <-observed:
+		if seed != 0x12345678 {
+			t.Fatalf("observed seed %x", seed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("successful login seed was not observed")
+	}
+}
+
 func newTCP(mode auth.Mode) (*TCP, *store.Memory) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, sessions := store.NewMemory(), session.NewRegistry()

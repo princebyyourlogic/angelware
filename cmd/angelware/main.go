@@ -27,17 +27,20 @@ import (
 	"github.com/princebyyourlogic/angelware/internal/session"
 	"github.com/princebyyourlogic/angelware/internal/store"
 	"github.com/princebyyourlogic/angelware/internal/stun"
+	"github.com/princebyyourlogic/angelware/internal/svrpeer"
 )
 
 type config struct {
-	PublicIP    netip.Addr
-	Bind        string
-	Port        int
-	STUNAltPort int
-	DatabaseURL string
-	AuthMode    auth.Mode
-	LogLevel    slog.Level
-	STUN        []stunTitle
+	PublicIP        netip.Addr
+	Bind            string
+	Port            int
+	STUNAltPort     int
+	DatabaseURL     string
+	AuthMode        auth.Mode
+	LogLevel        slog.Level
+	STUN            []stunTitle
+	SVRRelayRewrite bool
+	SVRObserver     bool
 }
 
 type stunTitle struct {
@@ -71,7 +74,29 @@ func loadConfig() (config, error) {
 	if err := c.LogLevel.UnmarshalText([]byte(env("ANGELWARE_LOG_LEVEL", "info"))); err != nil {
 		return c, fmt.Errorf("ANGELWARE_LOG_LEVEL: %w", err)
 	}
-	return c, c.loadSTUN()
+	switch env("ANGELWARE_SVR_RELAY_REWRITE", "off") {
+	case "on":
+		c.SVRRelayRewrite = true
+	case "off":
+	default:
+		return c, errors.New("ANGELWARE_SVR_RELAY_REWRITE must be on or off")
+	}
+	switch env("ANGELWARE_SVR_OBSERVER", "off") {
+	case "on":
+		c.SVRObserver = true
+	case "off":
+	default:
+		return c, errors.New("ANGELWARE_SVR_OBSERVER must be on or off")
+	}
+	if err := c.loadSTUN(); err != nil {
+		return c, err
+	}
+	if c.SVRObserver {
+		if !c.SVRRelayRewrite || c.STUN[0].Mode != stun.Adaptive {
+			return c, errors.New("SvR observer requires adaptive mode and ANGELWARE_SVR_RELAY_REWRITE=on")
+		}
+	}
+	return c, nil
 }
 
 // loadSTUN configures one STUN service per title; they share the public IP and
@@ -156,22 +181,48 @@ func run(cfg config, log *slog.Logger) error {
 	defer st.Close()
 
 	sessions := session.NewRegistry()
+	mm := lobby.NewMatchmaking(log.With("svc", "matchmaking"))
 	tcp := &server.TCP{
 		Auth: &auth.Service{Store: st, Sessions: sessions, Mode: cfg.AuthMode, Log: log.With("svc", "auth")},
 		Lobby: &lobby.Server{Store: st, Sessions: sessions, Log: log.With("svc", "lobby"),
-			Matchmaking: lobby.NewMatchmaking(log.With("svc", "matchmaking"))},
+			Matchmaking: mm},
 		Log: log,
+	}
+	if cfg.SVRRelayRewrite && cfg.STUN[0].Mode != stun.Direct {
+		peers := svrpeer.New(log.With("svc", "svr-peer-relay"), mm.RoomKey)
+		tcp.Auth.ObserveLogin = peers.ObserveLogin
+		cfg.STUN[0].RewritePeer = peers.Rewrite
+		log.Info("experimental SvR match relay rewriting enabled")
 	}
 	ln, err := net.Listen("tcp4", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
 	if err != nil {
 		return err
 	}
-	errs := make(chan error, 1+len(cfg.STUN))
-	go func() { errs <- tcp.Serve(ctx, ln) }()
+	errs := make(chan error, 2+len(cfg.STUN))
+	var svrSTUN *stun.Server
+	var udpServers []*stun.Server
 	for _, t := range cfg.STUN {
 		srv := &stun.Server{Config: t.Config, Bind: cfg.Bind, Log: log.With("svc", "stun", "title", t.name)}
+		if t.name == "svr2007" {
+			svrSTUN = srv
+		}
+		udpServers = append(udpServers, srv)
+	}
+	if cfg.SVRObserver {
+		mm.ObserveConnectivity = func(e lobby.ConnectivityEvent) {
+			if e.Created {
+				svrSTUN.BeginObservation(e.Room, e.Host, e.Started)
+			} else {
+				svrSTUN.ObserveConnectivity(e.Room, e.Host, e.GuestIP, e.Started, e.At, e.UniqueGuest)
+			}
+		}
+		log.Info("stock SvR connectivity observer enabled")
+	}
+	go func() { errs <- tcp.Serve(ctx, ln) }()
+	for _, srv := range udpServers {
 		go func() { errs <- srv.Run(ctx) }()
 	}
+
 	log.Info("angelware listening", "bind", cfg.Bind, "tcp", cfg.Port, "public_ip", cfg.PublicIP.String(),
 		"auth_mode", cfg.AuthMode, "postgres", cfg.DatabaseURL != "")
 	err = <-errs
