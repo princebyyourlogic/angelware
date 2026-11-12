@@ -113,6 +113,9 @@ func (p *Postgres) DeleteProfile(ctx context.Context, id uint64) error {
 }
 
 func (p *Postgres) WriteStats(ctx context.Context, id uint64, r StatsRow) error {
+	if r.Values == nil {
+		r.Values = []int32{} // NOT NULL column; rating-only boards have no extra values
+	}
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO stats (user_id, board, flag, rating, vals) VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (user_id, board) DO UPDATE

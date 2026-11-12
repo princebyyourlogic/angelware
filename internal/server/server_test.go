@@ -285,9 +285,21 @@ func (c *client) fetch(slot uint8) [][]bitbuf.Field {
 	}
 	var msgs [][]bitbuf.Field
 	for i := 0; i < int(n); i++ {
-		size := map[uint64]int{1: 9, 2: 7, 3: 7, 4: 7, 5: 10, 6: 10, 7: 10}[all[0].Int]
-		if size == 0 {
-			size = 8 // types 8-12: header, sender, one blob
+		// header (5) + sender (2), then per type; a u16 length of 0 has no blob after it.
+		size := 7
+		switch t := all[0].Int; {
+		case t == 1:
+			size = 8
+			if all[7].Int > 0 {
+				size = 9
+			}
+		case t >= 5 && t <= 7:
+			size = 9
+			if all[8].Int > 0 {
+				size = 10
+			}
+		case t >= 8:
+			size = 8
 		}
 		msgs = append(msgs, all[:size])
 		all = all[size:]
@@ -303,20 +315,27 @@ func TestFriendsMailboxAndPresence(t *testing.T) {
 	hostID, guestID := dwcrypto.UserID([]byte("host")), dwcrypto.UserID([]byte("guest"))
 	host := loginAndOpenGateway(t, s, "host", "hostpw")
 
-	// The guest is offline: the request waits in their mailbox.
-	host.task(9, 1, 1, u8(0), u64(guestID), bitbuf.Bytes(bitbuf.Blob, []byte("hi")), bitbuf.Int(bitbuf.U32, 2))
+	// The guest is offline: the requests wait in their mailbox. The first is how the
+	// retail game sends it (no data); a second request from another player with
+	// data checks that messages in one fetch stay aligned.
+	host.task(9, 1, 1, u8(0), u64(guestID))
+	dial(t, s).roundTrip(signup("third", "thirdpw"))
+	third := loginAndOpenGateway(t, s, "third", "thirdpw")
+	third.task(9, 1, 1, u8(0), u64(guestID), bitbuf.Bytes(bitbuf.Blob, []byte("hi")), bitbuf.Int(bitbuf.U32, 2))
 
 	guest := loginAndOpenGateway(t, s, "guest", "guestpw")
 	msgs := guest.fetch(2)
-	if len(msgs) != 1 || msgs[0][0].Int != 1 || msgs[0][5].Int != hostID || string(msgs[0][6].Bytes) != "host" ||
-		string(msgs[0][8].Bytes) != "hi" {
+	if len(msgs) != 2 || msgs[0][0].Int != 1 || msgs[0][5].Int != hostID || string(msgs[0][6].Bytes) != "host" ||
+		msgs[0][7].Int != 0 || len(msgs[0]) != 8 ||
+		msgs[1][7].Int != 2 || string(msgs[1][8].Bytes) != "hi" {
 		t.Fatalf("mailbox %v", msgs)
 	}
 	r := guest.task(9, 3, 19, u8(0)) // pending requests list
-	if n, _ := r.U32(); n != 1 {
+	if n, _ := r.U32(); n != 2 {
 		t.Fatalf("requests %d", n)
 	}
-	guest.task(6, 4, 4, u8(0), u64(msgs[0][2].Int)) // acknowledge
+	guest.task(6, 4, 4, u8(0), u64(msgs[0][2].Int)) // acknowledge both
+	guest.task(6, 4, 4, u8(0), u64(msgs[1][2].Int))
 	if left := guest.fetch(5); len(left) != 0 {
 		t.Fatalf("message not removed after ack: %v", left)
 	}
@@ -339,13 +358,14 @@ func TestFriendsMailboxAndPresence(t *testing.T) {
 	if m := guest.push(); m[0].Int != 8 || string(m[7].Bytes) != "gg" {
 		t.Fatalf("message push %v", m)
 	}
-	host.task(9, 9, 8, u8(0), u64(guestID), bitbuf.Bytes(bitbuf.Blob, []byte{1, 2}), bitbuf.Int(bitbuf.U32, 7),
-		bitbuf.Bytes(bitbuf.Blob, []byte{3}), bitbuf.Int(bitbuf.U32, 0))
-	if m := guest.push(); m[0].Int != 5 || len(m[7].Bytes) != 2 || m[8].Int != 7 || m[9].Bytes[0] != 3 {
+	// Invite as the retail game sends it: u8, u64 friend, blob session id.
+	sid := []byte{0x1d, 0x18, 0x44, 0x06, 0xc5, 0x37, 0x43, 0xa7}
+	host.task(9, 9, 8, u8(0), u64(guestID), bitbuf.Bytes(bitbuf.Blob, sid))
+	if m := guest.push(); m[0].Int != 5 || !bytes.Equal(m[7].Bytes, sid) || m[8].Int != 0 || len(m) != 9 {
 		t.Fatalf("invite push %v", m)
 	}
 	guest.task(9, 10, 9, u8(0), u64(hostID))
-	if m := host.push(); m[0].Int != 6 || m[8].Int != 7 {
+	if m := host.push(); m[0].Int != 6 || !bytes.Equal(m[7].Bytes, sid) {
 		t.Fatalf("invite accept push %v", m)
 	}
 

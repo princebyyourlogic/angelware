@@ -26,9 +26,13 @@ import (
 //
 //	u32 type; u64 timestamp; u64 message id; u32 0; bool 0
 //	u64 from user; string from name
-//	type 1:     u16, blob             (friend request)
-//	types 5-7:  blob, u16, blob       (invite and its answers: join information)
-//	types 8-12: blob                  (friend message text, online/offline, block)
+//	type 1:     u16 n, [blob n]               (friend request; blob only when n > 0)
+//	types 5-7:  blob id[8], u16 n, [blob n]   (invite and answers: session id first)
+//	types 8-12: blob                          (friend message text, online/offline, block)
+//
+// The u16 is the length of the blob after it, which the game reads only when it
+// is non-zero (0x6bb60, 0x6b7b8); writing an empty blob anyway would desync the
+// next message in a fetch.
 //
 // A push (gateway message 2) carries one message in the same encoding; the game
 // dedupes by message id.
@@ -61,17 +65,35 @@ func messageFields(m store.Message) []bitbuf.Field {
 		bitbuf.Int(bitbuf.U64, m.From),
 		bitbuf.Bytes(bitbuf.String, []byte(truncate(m.FromName, 63))),
 	}
-	data, data2 := orEmpty(m.Data), orEmpty(m.Data2)
 	switch {
 	case m.Type == msgFriendRequest:
-		f = append(f, bitbuf.Int(bitbuf.U16, uint64(m.Small)), bitbuf.Bytes(bitbuf.Blob, data))
+		f = appendSized(f, m.Data)
 	case m.Type >= msgInvite && m.Type <= msgInviteRejected:
-		f = append(f, bitbuf.Bytes(bitbuf.Blob, data), bitbuf.Int(bitbuf.U16, uint64(m.Small)),
-			bitbuf.Bytes(bitbuf.Blob, data2))
+		f = append(f, bitbuf.Bytes(bitbuf.Blob, orEmpty(truncateBytes(m.Data, 8))))
+		f = appendSized(f, m.Data2)
 	case m.Type >= msgFriendMessage:
-		f = append(f, bitbuf.Bytes(bitbuf.Blob, data))
+		f = append(f, bitbuf.Bytes(bitbuf.Blob, orEmpty(m.Data)))
 	}
 	return f
+}
+
+// appendSized writes u16 len and, only when len > 0, the blob.
+func appendSized(f []bitbuf.Field, b []byte) []bitbuf.Field {
+	if len(b) > 0xffff {
+		b = b[:0xffff]
+	}
+	f = append(f, bitbuf.Int(bitbuf.U16, uint64(len(b))))
+	if len(b) > 0 {
+		f = append(f, bitbuf.Bytes(bitbuf.Blob, b))
+	}
+	return f
+}
+
+func truncateBytes(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[:n]
+	}
+	return b
 }
 
 // pushPayload is a gateway message 2: one typed message, no envelope (0x6ad48).

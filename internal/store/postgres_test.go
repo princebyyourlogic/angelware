@@ -61,9 +61,13 @@ func TestPostgres(t *testing.T) {
 		t.Fatalf("public %+v %v", pub, err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := p.WriteStats(ctx, id, StatsRow{Board: 3, Rating: int64(i), Values: []int32{1, 2}}); err != nil {
+		if err := p.WriteStats(ctx, id, StatsRow{Board: 1, Rating: int64(i), Values: []int32{1, 2}}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Rating-only boards (2-9 etc.) write no extra values.
+	if err := p.WriteStats(ctx, id, StatsRow{Board: 3, Rating: 1}); err != nil {
+		t.Fatalf("rating-only board: %v", err)
 	}
 
 	// Social: requests, friendship, blocks and the mailbox survive in the database.

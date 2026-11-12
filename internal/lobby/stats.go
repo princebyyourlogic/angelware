@@ -31,7 +31,9 @@ func (c *Conn) stats(ctx context.Context, t Task) []byte {
 		c.log.Warn("stats write did not parse", "err", err, "fields", len(fields))
 		return Reply(t, nil)
 	}
-	row := store.StatsRow{Flag: uint8(fields[1].Int), Board: int32(fields[2].Int), Rating: int64(fields[4].Int)}
+	// Boards 2-9, 11-18, 20-22 and 24-26 carry only the rating: keep an empty list.
+	row := store.StatsRow{Flag: uint8(fields[1].Int), Board: int32(fields[2].Int), Rating: int64(fields[4].Int),
+		Values: []int32{}}
 	for _, f := range fields[5:] {
 		if f.Type == bitbuf.I32 {
 			row.Values = append(row.Values, int32(f.Int))

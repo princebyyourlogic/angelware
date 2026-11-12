@@ -9,7 +9,7 @@ import (
 
 // Friends, lobby service 9 (senders LBYM 0x60a90..0x61920, lobby tasks 0x15..0x21):
 //
-//	1  ProposeFriend(u8, u64 user, blob, u32)          -> message 1 to them
+//	1  ProposeFriend(u8, u64 user[, blob, u32])        -> message 1 to them
 //	13 WithdrawProposalFriend(u8, u64 user)             -> message 4
 //	2  AcceptProposeFriend(u8, u64 user)                -> message 2
 //	3  RejectProposeFriend(u8, u64 user)                -> message 3
@@ -18,9 +18,13 @@ import (
 //	5  LoadFriendList(u8)         -> u64 user, string name, bool online
 //	6  SetBlockUser(u8, u64 user, u8 level)
 //	7  LoadBlockUserList(u8)      -> u64 user, string name, u8 level
-//	12 SendFriendMessage(u8, u64 user, u32, blob text, u32)        -> message 8
-//	8  InviteGameSession(u8, u64 user, blob, u32, blob, u32)       -> message 5
+//	12 SendFriendMessage(u8, u64 user, ..., blob text, ...)        -> message 8
+//	8  InviteGameSession(u8, u64 user, blob session id[8])         -> message 5
 //	9  AcceptInvitation(u8, u64 user) / 10 RejectInvitation        -> message 6 / 7
+//
+// Captured from the retail game: ProposeFriend carried only u8 + u64, and an invite
+// u8 + u64 + the hosted session's 8-byte id (which the invitee then looks up with
+// matchmaking task 4).
 //
 // Friendships, requests and blocks persist; every notification goes through the
 // mailbox so a player who is offline sees it at their next login.
@@ -40,12 +44,20 @@ const (
 	frRequests = 19
 )
 
-// invite remembers the join information of a sent invite so the answer can carry
-// it back to the inviter.
+// invite remembers the session of a sent invite so the answer can carry it back
+// to the inviter.
 type invite struct {
-	data  []byte
-	small uint16
-	data2 []byte
+	session []byte
+}
+
+// firstBlob returns the first blob among a task's arguments.
+func firstBlob(args []bitbuf.Field) []byte {
+	for _, f := range args {
+		if f.Type == bitbuf.Blob {
+			return f.Bytes
+		}
+	}
+	return nil
 }
 
 func (c *Conn) friends(ctx context.Context, t Task) []byte {
@@ -81,9 +93,7 @@ func (c *Conn) friends(ctx context.Context, t Task) []byte {
 			return Reply(t, nil)
 		}
 		m := note(other, msgFriendRequest)
-		if len(args) >= 3 {
-			m.Data, m.Small = args[1].Bytes, uint16(args[2].Int)
-		}
+		m.Data = firstBlob(args)
 		fail("save friend request", st.AddFriendRequest(ctx, me, other, m.Data))
 		c.srv.Notify(ctx, m)
 	case frWithdraw:
@@ -146,21 +156,16 @@ func (c *Conn) friends(ctx context.Context, t Task) []byte {
 			return Reply(t, nil)
 		}
 		m := note(other, msgFriendMessage)
-		if len(args) >= 3 {
-			m.Data = args[2].Bytes
-		}
+		m.Data = firstBlob(args)
 		c.srv.Notify(ctx, m)
 	case frInvite:
 		if blocked, _ := st.IsBlocked(ctx, other, me); blocked || other == 0 {
 			return Reply(t, nil)
 		}
-		inv := invite{}
-		if len(args) >= 4 {
-			inv = invite{data: args[1].Bytes, small: uint16(args[2].Int), data2: args[3].Bytes}
-		}
+		inv := invite{session: firstBlob(args)}
 		c.srv.setInvite(me, other, inv)
 		m := note(other, msgInvite)
-		m.Data, m.Small, m.Data2 = inv.data, inv.small, inv.data2
+		m.Data = inv.session
 		c.srv.Notify(ctx, m)
 	case frInviteOK, frInviteNo:
 		inv := c.srv.takeInvite(other, me)
@@ -169,7 +174,7 @@ func (c *Conn) friends(ctx context.Context, t Task) []byte {
 			typ = msgInviteRejected
 		}
 		m := note(other, typ)
-		m.Data, m.Small, m.Data2 = inv.data, inv.small, inv.data2
+		m.Data = inv.session
 		c.srv.Notify(ctx, m)
 	default:
 		c.log.Info("friends task not implemented", "task", t.ID, "args", fields)
