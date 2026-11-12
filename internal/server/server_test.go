@@ -442,6 +442,9 @@ type row struct {
 func readRows(t *testing.T, r *bitbuf.Reader, columns int) []row {
 	t.Helper()
 	n, _ := r.U32()
+	if total, err := r.U32(); err != nil || total < n {
+		t.Fatalf("total entries %d for %d rows: %v", total, n, err)
+	}
 	fs, err := r.Fields()
 	if err != nil {
 		t.Fatal(err)

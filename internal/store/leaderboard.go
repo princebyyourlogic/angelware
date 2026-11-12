@@ -26,6 +26,8 @@ type Leaderboards interface {
 	StatsFrom(ctx context.Context, board int32, position, limit int) ([]RankedRow, error)
 	// StatsAround returns up to limit rows centred on a player; empty if they have no row.
 	StatsAround(ctx context.Context, board int32, user uint64, limit int) ([]RankedRow, error)
+	// StatsTotal is the number of rows on a board.
+	StatsTotal(ctx context.Context, board int32) (int, error)
 }
 
 // aroundStart is the 1-based position a window of limit rows centred on pos starts at.
@@ -93,7 +95,17 @@ func (m *Memory) StatsAround(ctx context.Context, board int32, user uint64, limi
 	return nil, nil
 }
 
+func (m *Memory) StatsTotal(_ context.Context, board int32) (int, error) {
+	return len(m.ranked(board)), nil
+}
+
 // --- PostgreSQL --------------------------------------------------------------
+
+func (p *Postgres) StatsTotal(ctx context.Context, board int32) (int, error) {
+	var n int
+	err := p.pool.QueryRow(ctx, `SELECT count(*) FROM stats WHERE board = $1`, board).Scan(&n)
+	return n, err
+}
 
 // boardSQL ranks one board; pos is the row's place in display order (for paging).
 const boardSQL = `

@@ -138,7 +138,9 @@ blob[48]` has no named accessors; captured values were all zero (inferred: unuse
 | 7, 9 | | multiple boards in one task | none |
 | 8 | | u8, blob, u32 | |
 
-Result (`FUN_0006ef98`): envelope with taskID; tasks 3-6 then carry `u32 count` and rows.
+Result (`FUN_0006ef98`): envelope with taskID; tasks 3-6 then carry `u32 count`, **`u32 total rows on
+the board`** (`0x6f6e0`, `GetReadStatsTotalEntries`; only parsed when count > 0) and the rows (list
+deserializer `0xbf778`, at most 50).
 
 **Row read** (`0x6f328` plus the board's columns): `u64 user, i64 rating, u64 rank, string name (≤63)`,
 then the board's extra columns. Column readers: `0xbd108` 12 × i32 (board 1), `0xbdf88` 32 × i32

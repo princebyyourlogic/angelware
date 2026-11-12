@@ -17,7 +17,8 @@ import (
 //	  user != 0: rows around that player; user == 0: rows from a 1-based position
 //	6 read filtered(u8, u64, object): answered with no rows
 //
-// Read results (0x6ef98): u32 count, then rows of u64 user, i64 rating, u64 rank,
+// Read results (0x6ef98, list 0xbf778): u32 count, u32 total rows on the board
+// (0x6f6e0, GetReadStatsTotalEntries), then rows of u64 user, i64 rating, u64 rank,
 // string name (0x6f328), followed by the board's columns exactly as the game
 // wrote them (board 1: 12 x i32, 10: 32, 19 and 23: 6, score-only boards: none).
 const (
@@ -62,7 +63,7 @@ func (c *Conn) statsRead(ctx context.Context, t Task) []byte {
 		if err != nil {
 			c.log.Warn("stats read did not parse", "task", t.ID, "err", err)
 		}
-		return ListReply(t, 0, nil)
+		return statsReply(t, nil, 0)
 	}
 	board := int32(fields[1].Int)
 	args := fields[2:]
@@ -79,7 +80,7 @@ func (c *Conn) statsRead(ctx context.Context, t Task) []byte {
 		rows, err = st.StatsFor(ctx, board, users)
 	case statsReadRange:
 		if len(args) < 3 {
-			return ListReply(t, 0, nil)
+			return statsReply(t, nil, 0)
 		}
 		user, position := args[0].Int, int(args[1].Int)
 		limit := min(int(int64(args[2].Int)), statsMaxRows)
@@ -91,9 +92,19 @@ func (c *Conn) statsRead(ctx context.Context, t Task) []byte {
 	}
 	if err != nil {
 		c.log.Error("read stats", "board", board, "err", err)
-		return ListReply(t, 0, nil)
+		return statsReply(t, nil, 0)
 	}
-	var out []bitbuf.Field
+	total, err := st.StatsTotal(ctx, board)
+	if err != nil {
+		c.log.Error("count stats", "board", board, "err", err)
+	}
+	c.log.Debug("stats read", "task", t.ID, "board", board, "rows", len(rows), "total", total)
+	return statsReply(t, rows, total)
+}
+
+// statsReply is the read result: u32 count, u32 total, rows.
+func statsReply(t Task, rows []store.RankedRow, total int) []byte {
+	out := []bitbuf.Field{bitbuf.Int(bitbuf.U32, uint64(total))}
 	for _, r := range rows {
 		out = append(out, bitbuf.Int(bitbuf.U64, r.UserID), bitbuf.Int(bitbuf.I64, uint64(r.Rating)),
 			bitbuf.Int(bitbuf.U64, r.Rank), bitbuf.Bytes(bitbuf.String, []byte(truncate(r.Name, 63))))
@@ -101,6 +112,5 @@ func (c *Conn) statsRead(ctx context.Context, t Task) []byte {
 			out = append(out, bitbuf.Int(bitbuf.I32, uint64(uint32(v))))
 		}
 	}
-	c.log.Debug("stats read", "task", t.ID, "board", board, "rows", len(rows))
 	return ListReply(t, uint32(len(rows)), out)
 }
