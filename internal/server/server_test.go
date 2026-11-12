@@ -482,10 +482,16 @@ func TestLeaderboards(t *testing.T) {
 		len(rows[0].values) != 12 || rows[0].values[0] != 1 {
 		t.Fatalf("own row %+v", rows)
 	}
-	// Task 5 from rank 1: ordered by rating, equal ratings share a rank.
+	// Task 5 from rank 1: ordered by rating; ranks are positions, so ties do not repeat.
 	rows = readRows(t, clients["low"].task(4, 3, 5, u8(0), board, u64(0), u64(1), bitbuf.Int(bitbuf.I64, 50)), 12)
-	if len(rows) != 4 || rows[0].name != "top" || rows[1].rank != 2 || rows[2].rank != 2 || rows[3].rank != 4 {
+	if len(rows) != 4 || rows[0].name != "top" || rows[1].rank != 2 || rows[2].rank != 3 || rows[3].rank != 4 ||
+		rows[1].rating != 20 || rows[2].rating != 20 {
 		t.Fatalf("top list %+v", rows)
+	}
+	// Starting at position 3 (how the ranking screen pages).
+	rows = readRows(t, clients["low"].task(4, 7, 5, u8(0), board, u64(0), u64(3), bitbuf.Int(bitbuf.I64, 50)), 12)
+	if len(rows) != 2 || rows[0].rank != 3 || rows[1].name != "low" {
+		t.Fatalf("page from 3 %+v", rows)
 	}
 	// Task 5 around a player, limited window.
 	rows = readRows(t, clients["low"].task(4, 4, 5, u8(0), board, u64(id("low")), u64(0), bitbuf.Int(bitbuf.I64, 2)), 12)
@@ -497,6 +503,13 @@ func TestLeaderboards(t *testing.T) {
 		u64(id("low")), u64(12345)), 12)
 	if len(rows) != 2 {
 		t.Fatalf("several %+v", rows)
+	}
+	// Delete (task 2): only the caller's own row goes; another player's is refused.
+	clients["low"].task(4, 8, 2, u8(0), board, u64(id("top")))
+	clients["low"].task(4, 9, 2, u8(0), board, u64(0))
+	rows = readRows(t, clients["low"].task(4, 10, 5, u8(0), board, u64(0), u64(1), bitbuf.Int(bitbuf.I64, 50)), 12)
+	if len(rows) != 3 || rows[0].name != "top" || rows[2].name == "low" {
+		t.Fatalf("after delete %+v", rows)
 	}
 	// A board nobody wrote: no rows.
 	if rows = readRows(t, clients["low"].task(4, 6, 3, u8(0), bitbuf.Int(bitbuf.I32, 10), u64(id("low"))), 32); len(rows) != 0 {

@@ -14,11 +14,13 @@ type RankedRow struct {
 	UserID uint64
 	Name   string
 	Rating int64
-	Rank   uint64 // 1-based; equal ratings share a rank
+	Rank   uint64 // 1-based position on the board (unique; ties ordered by user id)
 	Values []int32
 }
 
-// Leaderboards reads stored stats rows ranked by rating, highest first.
+// Leaderboards reads stored stats rows ranked by rating, highest first. A row's
+// rank is its position: the ranking screen opens at the player's own rank − 26
+// and pages by position (OME2 0x65e0), so ranks must not repeat.
 type Leaderboards interface {
 	// StatsFor returns the rows of the given players (missing players are skipped).
 	StatsFor(ctx context.Context, board int32, users []uint64) ([]RankedRow, error)
@@ -56,9 +58,6 @@ func (m *Memory) ranked(board int32) []RankedRow {
 	})
 	for i := range rows {
 		rows[i].Rank = uint64(i + 1)
-		if i > 0 && rows[i].Rating == rows[i-1].Rating {
-			rows[i].Rank = rows[i-1].Rank
-		}
 	}
 	return rows
 }
@@ -107,10 +106,9 @@ func (p *Postgres) StatsTotal(ctx context.Context, board int32) (int, error) {
 	return n, err
 }
 
-// boardSQL ranks one board; pos is the row's place in display order (for paging).
+// boardSQL ranks one board: pos is the row's position, which is also its rank.
 const boardSQL = `
 	SELECT s.user_id, coalesce(a.name, '') AS name, s.rating, s.vals,
-	       rank() OVER (ORDER BY s.rating DESC) AS rank,
 	       row_number() OVER (ORDER BY s.rating DESC, s.user_id) AS pos
 	FROM stats s LEFT JOIN accounts a ON a.user_id = s.user_id
 	WHERE s.board = $1`
@@ -120,12 +118,12 @@ func (p *Postgres) StatsFor(ctx context.Context, board int32, users []uint64) ([
 	for i, u := range users {
 		ids[i] = int64(u)
 	}
-	return p.rankedRows(ctx, `SELECT user_id, name, rating, vals, rank FROM (`+boardSQL+`) b
+	return p.rankedRows(ctx, `SELECT user_id, name, rating, vals, pos FROM (`+boardSQL+`) b
 		WHERE user_id = ANY($2) ORDER BY pos`, board, ids)
 }
 
 func (p *Postgres) StatsFrom(ctx context.Context, board int32, position, limit int) ([]RankedRow, error) {
-	return p.rankedRows(ctx, `SELECT user_id, name, rating, vals, rank FROM (`+boardSQL+`) b
+	return p.rankedRows(ctx, `SELECT user_id, name, rating, vals, pos FROM (`+boardSQL+`) b
 		WHERE pos >= $2 ORDER BY pos LIMIT $3`, board, max(position, 1), limit)
 }
 

@@ -50,6 +50,7 @@ type Store interface {
 	SetPrivateProfile(ctx context.Context, userID uint64, p PrivateProfile) error
 	DeleteProfile(ctx context.Context, userID uint64) error
 	WriteStats(ctx context.Context, userID uint64, row StatsRow) error
+	DeleteStats(ctx context.Context, userID uint64, board int32) error
 	Social
 	Leaderboards
 	Close()
@@ -138,6 +139,13 @@ func (m *Memory) WriteStats(_ context.Context, id uint64, row StatsRow) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stats[[2]int64{int64(id), int64(row.Board)}] = row
+	return nil
+}
+
+func (m *Memory) DeleteStats(_ context.Context, id uint64, board int32) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.stats, [2]int64{int64(id), int64(board)})
 	return nil
 }
 

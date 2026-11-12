@@ -123,3 +123,8 @@ func (p *Postgres) WriteStats(ctx context.Context, id uint64, r StatsRow) error 
 		int64(id), r.Board, int16(r.Flag), r.Rating, r.Values)
 	return err
 }
+
+func (p *Postgres) DeleteStats(ctx context.Context, id uint64, board int32) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM stats WHERE user_id = $1 AND board = $2`, int64(id), board)
+	return err
+}

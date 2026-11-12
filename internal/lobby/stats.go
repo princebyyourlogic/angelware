@@ -11,6 +11,8 @@ import (
 // and WriteDna):
 //
 //	1 write(u8, u8 flag, i32 board, u64 0, i64 rating, i32 values...)
+//	2 delete(u8, i32 board, u64 user): user 0 is the caller; sent per board of a
+//	  group, e.g. when a player no longer holds a belt (prestige boards 19-26)
 //	3 read players(u8, i32 board, u64 user)
 //	4 read players(u8, i32 board, u32 n, n x u64 user)
 //	5 read range(u8, i32 board, u64 user, u64 position, i64 count)
@@ -23,6 +25,7 @@ import (
 // wrote them (board 1: 12 x i32, 10: 32, 19 and 23: 6, score-only boards: none).
 const (
 	statsWrite      = 1
+	statsDelete     = 2
 	statsReadUser   = 3
 	statsReadUsers  = 4
 	statsReadRange  = 5
@@ -33,6 +36,9 @@ const (
 func (c *Conn) stats(ctx context.Context, t Task) []byte {
 	if t.ID >= statsReadUser && t.ID <= statsReadFilter {
 		return c.statsRead(ctx, t)
+	}
+	if t.ID == statsDelete {
+		return c.statsDelete(ctx, t)
 	}
 	if t.ID != statsWrite {
 		return Reply(t, nil)
@@ -113,4 +119,24 @@ func statsReply(t Task, rows []store.RankedRow, total int) []byte {
 		}
 	}
 	return ListReply(t, uint32(len(rows)), out)
+}
+
+// statsDelete removes the caller's row on a board. A player can only delete
+// their own rows.
+func (c *Conn) statsDelete(ctx context.Context, t Task) []byte {
+	fields, err := t.Args.Fields()
+	if err != nil || len(fields) < 3 {
+		c.log.Warn("stats delete did not parse", "err", err)
+		return Reply(t, nil)
+	}
+	board, user := int32(fields[1].Int), fields[2].Int
+	if user != 0 && user != c.sess.UserID {
+		c.log.Warn("stats delete for another player refused", "board", board)
+		return Reply(t, nil)
+	}
+	if err := c.srv.Store.DeleteStats(ctx, c.sess.UserID, board); err != nil {
+		c.log.Error("delete stats", "board", board, "err", err)
+	}
+	c.log.Info("stats deleted", "board", board)
+	return Reply(t, nil)
 }
