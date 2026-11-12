@@ -178,7 +178,7 @@ func (m *Matchmaking) search(owner any, q searchQuery) [][]bitbuf.Field {
 	})
 	out := make([][]bitbuf.Field, 0, min(len(found), limit))
 	for _, c := range found[:min(len(found), limit)] {
-		out = append(out, c.s.info)
+		out = append(out, m.forSearcher(c.s, owner))
 	}
 	return out
 }

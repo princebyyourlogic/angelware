@@ -17,13 +17,25 @@ import (
 // A session info serializes symmetrically (base 0x652c8/0x65480, game fields
 // 0x27c90/0x281b0): blob host address[25], blob id[8], blob key[16], 4 x i32 slot
 // counts, then the game's fields. The host's info is stored with the id and key we
-// assign and returned to searchers unchanged. Sessions only live as long as the
-// host's gateway connection.
+// assign and returned to searchers (see RelayHostAddress). Sessions only live as
+// long as the host's gateway connection.
+//
+// The host address is a bdCommonAddr: three local addresses, the public one at
+// offset 18 (4 IPv4 octets, u16 LE port), and a NAT type byte. The match itself
+// is not DemonWare traffic: OMEN 0x3158 hands the host's public address to the
+// game's own UDP netcode, except that when the joiner's public IP equals the
+// host's (as it does for every pair behind the relay, whose endpoints all share
+// the server's IP) it uses the host's first local address instead.
 //
 // Replies (0x64ea0): u32 error, u8 task id (1/4/5/6 carry results), u32 count, results.
 // A create result is blob id[8], blob key[16].
 type Matchmaking struct {
-	Log      *slog.Logger
+	Log *slog.Logger
+	// RelayHostAddress makes searchers see the host's public (relay) endpoint as
+	// its first local address too, so the same-IP case above connects through
+	// the relay. Set it when the STUN service runs in relay mode.
+	RelayHostAddress bool
+
 	mu       sync.RWMutex
 	sessions map[[8]byte]*mmSession
 	created  uint64
@@ -37,6 +49,9 @@ type mmSession struct {
 }
 
 const (
+	hostAddrSize   = 25 // bdCommonAddr
+	hostAddrPublic = 18
+
 	mmCreate   = 1
 	mmUpdate   = 2
 	mmDelete   = 3
@@ -46,6 +61,7 @@ const (
 	mmMaxResults = 20
 	infoID       = 1 // field positions in a session info
 	infoKey      = 2
+	infoHostAddr = 0
 )
 
 func NewMatchmaking(log *slog.Logger) *Matchmaking {
@@ -90,7 +106,7 @@ func (m *Matchmaking) Handle(owner any, t Task) []byte {
 			s := m.sessions[[8]byte(args[0].Bytes)]
 			m.mu.RUnlock()
 			if s != nil {
-				return mmReply(t, 1, s.info)
+				return mmReply(t, 1, m.forSearcher(s, owner))
 			}
 		}
 		return mmReply(t, 0, nil)
@@ -156,4 +172,17 @@ func (m *Matchmaking) Open() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.sessions)
+}
+
+// forSearcher returns a session's info as another player sees it.
+func (m *Matchmaking) forSearcher(s *mmSession, searcher any) []bitbuf.Field {
+	addr := s.info[infoHostAddr]
+	if !m.RelayHostAddress || s.owner == searcher || addr.Type != bitbuf.Blob || len(addr.Bytes) != hostAddrSize {
+		return s.info
+	}
+	b := append([]byte(nil), addr.Bytes...)
+	copy(b[:6], b[hostAddrPublic:hostAddrPublic+6])
+	info := append([]bitbuf.Field(nil), s.info...)
+	info[infoHostAddr] = bitbuf.Bytes(bitbuf.Blob, b)
+	return info
 }

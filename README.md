@@ -154,7 +154,7 @@ All set in `.env`:
 | `ANGELWARE_BIND` | `0.0.0.0` | Address to listen on |
 | `ANGELWARE_PORT` | `3074` | Main port, TCP and UDP (the game expects 3074) |
 | `ANGELWARE_STUN_ALT_PORT` | `3075` | Second UDP port for NAT detection |
-| `ANGELWARE_STUN_MODE` | `direct` | SvR 2007 connection mode (see below) |
+| `ANGELWARE_STUN_MODE` | `direct` | SvR 2007 connection mode: `direct` or `relay` (see below) |
 | `ANGELWARE_BRO` | `on` | `off` disables the CoD BRO service |
 | `ANGELWARE_BRO_PORT`, `ANGELWARE_BRO_ALT_PORT` | `2273`, `2274` | CoD BRO's NAT detection ports |
 | `ANGELWARE_BRO_MODE` | `relay` | CoD BRO connection mode (see below) |
@@ -178,7 +178,14 @@ Each game's NAT service runs in one of three modes, all on a single public IPv4 
   connection hasn't worked within `ANGELWARE_DIRECT_WINDOW`, the relay is offered instead.
 
 All players must sign in again and create new rooms after the mode changes. The relay and adaptive
-modes are a port of codstun, written for CoD BRO; for SvR 2007 they are untested.
+modes are a port of codstun, written for CoD BRO.
+
+For SvR 2007 use `direct` or `relay`, not `adaptive`. The match runs on the game's own netcode, which
+connects to the host's public address, or to its LAN address when both players share a public IP.
+In `relay` mode angelware gives joiners the host's relay endpoint as its LAN address, so matches go
+through the relay. In `adaptive` the lobby can use the relay but the match goes direct, so players
+behind strict NATs (or two consoles behind one router that can't loop traffic back) are dropped
+when the match starts.
 
 ### Accounts and privacy
 
