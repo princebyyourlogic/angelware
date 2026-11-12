@@ -38,8 +38,8 @@ The first supported game is **WWE SmackDown vs. Raw 2007** (US, `SLUS-214.27`, v
 | Friends, friend requests, session invites | ✅ |
 | Notifications kept for offline players (delivered at next sign-in) | ✅ |
 | Friend messages | ✅ (sent directly between online players by the game) |
-| Leaderboards and records | 🧪 implemented, not yet tested in game |
-| Ranked matchmaking filters | ⏳ not yet |
+| Leaderboards and records | ✅ |
+| Ranked matchmaking and search filters | 🧪 implemented, not yet tested in game |
 
 The retail game has been tested in PCSX2: two players signed up, found each other's session and played a
 match. Protocol notes are in [docs/svr2007-analysis.md](docs/svr2007-analysis.md).

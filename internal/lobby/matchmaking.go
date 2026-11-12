@@ -26,12 +26,14 @@ type Matchmaking struct {
 	Log      *slog.Logger
 	mu       sync.RWMutex
 	sessions map[[8]byte]*mmSession
+	created  uint64
 }
 
 type mmSession struct {
 	key   []byte
 	owner any
 	info  []bitbuf.Field
+	order uint64 // creation order, for stable search results
 }
 
 const (
@@ -93,20 +95,19 @@ func (m *Matchmaking) Handle(owner any, t Task) []byte {
 		}
 		return mmReply(t, 0, nil)
 	case mmFind:
+		q := parseQuery(args)
+		results := m.search(owner, q)
 		var out []bitbuf.Field
-		var n uint32
-		m.mu.RLock()
-		for _, s := range m.sessions {
-			if s.owner == owner || n == mmMaxResults {
-				continue
-			}
-			out = append(out, s.info...)
-			n++
+		for _, info := range results {
+			out = append(out, info...)
 		}
+		m.mu.RLock()
 		total := len(m.sessions)
 		m.mu.RUnlock()
-		m.Log.Info("find sessions", "returned", n, "open", total)
-		return mmReply(t, n, out)
+		m.Log.Info("find sessions", "returned", len(results), "open", total, "type", q.kind,
+			"rank", q.rank, "rank_window", []int32{q.rankLow, q.rankHigh},
+			"match_type", []int32{q.matchLow, q.matchHi})
+		return mmReply(t, uint32(len(results)), out)
 	}
 	m.Log.Info("matchmaking task not implemented", "task", t.ID)
 	return mmReply(t, 0, nil)
@@ -120,7 +121,8 @@ func (m *Matchmaking) create(owner any, t Task, info []bitbuf.Field) []byte {
 	info[infoID] = bitbuf.Bytes(bitbuf.Blob, id[:])
 	info[infoKey] = bitbuf.Bytes(bitbuf.Blob, key)
 	m.mu.Lock()
-	m.sessions[id] = &mmSession{key: key, owner: owner, info: info}
+	m.created++
+	m.sessions[id] = &mmSession{key: key, owner: owner, info: info, order: m.created}
 	n := len(m.sessions)
 	m.mu.Unlock()
 	m.Log.Info("session created", "session", fmt.Sprintf("%x", id), "open", n)

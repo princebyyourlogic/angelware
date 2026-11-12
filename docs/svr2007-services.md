@@ -177,19 +177,34 @@ the stored rows; `rank` is the row's position on that board ordered by rating, h
 and title boards (10, 19, 23) hold the online championship belts (`COnlineCommon::GetTitleBelt`,
 `CCreateBeltTitleMatch` prestige in the main ELF).
 
-## Ranked matches
+## Ranked matches and search filters
 
-- The session info's first game field is the **ranked flag** (`CSmack8MatchMakingBase::GetRankedSessionFlg`,
-  game offset 0x68 → serialized right after the slot counts). Other fields: private flag (selects the
-  slot counters), session mode, country, PAL50, title-match flag, match type, manager, arena, rank self/min/max,
-  entrance, CAS flag, superstar name (blob 129), sex, weight class, overall, brand, CAS STR/SUB/DUR/TEC/SPD/CHA/HRD/STA
-  (mapping `FUN_000276c0`, serialize `0x27c90`; confirmed).
-- `SearchSession` builds a `CSmack8SearchQueryInfo` with a rank window (`CSmack8SearchQueryBase::SetRank`).
-  The captured Quick Match query was 20 i32s ending with `0x80000000, 0x7fffffff` (an unbounded range).
-- Ratings are computed by the clients and written with the stats rows; the server does not calculate
-  them (inferred: no rating maths in the overlay). The server's job for ranked play: filter searches by the
-  ranked flag and rank window, persist rows, order leaderboards by rating, and keep the disconnect counters
-  (private profile) so quitters are visible.
+**Query** (DemonWare object `0x26ce8`, serializer `0x26db8`, filled by OMEN
+`COnlineMatchDataCtrl::SearchSession` 0x2db0 from a `CSearchCondition`), all i32:
+
+| # | Field | Source | Quick Match |
+| --- | --- | --- | --- |
+| 1 | type: 1/2 = ranked flag of the search, 3 = mode 1 | condition[2] == 1 | 1 |
+| 2 | max results | | 50 |
+| 3, 4 | 0, mode (nothing follows when mode ≠ 0) | | 0, 0 |
+| 5, 6 | match type low/high | rule (OMEN 0x8658/0x8760); any = [0, 85] | 0, 85 |
+| 7-9 | rank self, min, max | stars from points (`CSuperstarRank`), menu window (default 0..10) | 0, 0, 10 |
+| 10, 11 | entrance low/high | yes/no/any = [1,1]/[0,0]/[0,1] (`IncEntranceExist`) | 0, 1 |
+| 12, 13 | CAS low/high | same (`IncCasExist`) | 0, 1 |
+| 14-18 | country, 0, 14, bool, condition[3] == 2 | not filtered | 0, 0, 14, 0, 0 |
+| 19, 20 | country range low/high | `FUN_000044b0` | unbounded |
+
+**Session info game fields** (serializer `0x27c90`, copy `0x276c0`), after the 7 DemonWare base fields
+(blob address, id, key, slots public max/used, private max/used): 0 ranked, 1 name, 2 arena, 3 CAS, 4
+country, 5-6 country range, 7 entrance, 8 manager, 9 match type, 10 PAL50, 11-13 rank self/min/max, 14 title
+match, 15 session mode, 16 0, 17 i64 user, 18 ?, 19 superstar name blob[129], then sex, weight class, overall,
+brand and CAS attributes.
+
+**angelware's matching** (the original server's queries are unknown; each check pairs a query value with
+the session field the game fills from the same setting): ranked flag equal (type 1 ↔ ranked 1, type 2 ↔
+ranked 0); rank both ways (host stars in the searcher's window and the searcher's stars in the host's);
+match type in range; entrance and CAS in range; country both ways; sessions with no free public slot are
+hidden. Results are ordered by rank distance, then age, at most 20. Type 3 only checks free slots.
 
 ## Other services
 
