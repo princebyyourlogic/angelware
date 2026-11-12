@@ -57,7 +57,12 @@ func TestTaskTimingCorrelatesTheWrittenReplyAndQueueDelay(t *testing.T) {
 	time.Sleep(15 * time.Millisecond)
 	finished := make(chan struct{})
 	go func() { c.writer(); close(finished) }()
-	defer func() { close(c.done); <-finished }()
+	defer func() {
+		close(c.done)
+		server.Close()
+		client.Close()
+		<-finished
+	}()
 	client.SetReadDeadline(time.Now().Add(time.Second))
 	r := bufio.NewReader(client)
 	for seq := range 2 {

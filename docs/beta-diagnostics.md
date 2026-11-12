@@ -27,7 +27,8 @@ To make plain `docker compose` commands keep beta mode, set
   sampled every 30 seconds. Capture-tool messages include segment rotation and
   capture totals/drop statistics when available from the capture tool.
 
-Capture uses `dumpcap` with full snap length, five-minute/64 MiB segments and a
+Capture uses [dumpcap](https://www.wireshark.org/docs/man-pages/dumpcap.html)
+with full snap length, five-minute/approximately 64 MiB segments and a
 16 MiB capture buffer. The sidecar only has `NET_RAW`, has no Docker socket, and
 uses a read-only container filesystem outside the capture mount and `/tmp`.
 It does not change packet routing. Packet timestamps let an offline analyzer
