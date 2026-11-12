@@ -1,0 +1,45 @@
+# angelware + PostgreSQL.
+#
+# angelware uses host networking: STUN/NAT discovery reports each player's real UDP
+# source address, which Docker's port publishing can rewrite (notably for clients on
+# the same host). PostgreSQL is only published on localhost for angelware to reach.
+# DNS for the game's *.demonware.net names is not part of this stack.
+name: angelware
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: angelware
+      POSTGRES_DB: angelware
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${ANGELWARE_PG_PORT:-55433}:5432"
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U angelware -d angelware"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  angelware:
+    build: .
+    image: angelware:local
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ANGELWARE_PUBLIC_IP: ${ANGELWARE_PUBLIC_IP:?set ANGELWARE_PUBLIC_IP in .env}
+      ANGELWARE_BIND: ${ANGELWARE_BIND:-0.0.0.0}
+      ANGELWARE_PORT: ${ANGELWARE_PORT:-3074}
+      ANGELWARE_STUN_ALT_PORT: ${ANGELWARE_STUN_ALT_PORT:-3075}
+      ANGELWARE_AUTH_MODE: ${ANGELWARE_AUTH_MODE:-verify}
+      ANGELWARE_LOG_LEVEL: ${ANGELWARE_LOG_LEVEL:-info}
+      ANGELWARE_DATABASE_URL: postgres://angelware:${POSTGRES_PASSWORD}@127.0.0.1:${ANGELWARE_PG_PORT:-55433}/angelware?sslmode=disable
+
+volumes:
+  postgres:

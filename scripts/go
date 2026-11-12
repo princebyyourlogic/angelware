@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs the Go toolchain in the pinned golang image (no local Go install needed).
+# Usage: scripts/go test ./...
+set -e
+cd "$(dirname "$0")/.."
+exec docker run --rm -i -u "$(id -u):$(id -g)" \
+  -v "$PWD":/src -w /src \
+  -v angelware-gocache:/cache -e GOCACHE=/cache/build -e GOMODCACHE=/cache/mod \
+  -e GOFLAGS=-buildvcs=false \
+  golang:1.27.4-alpine go "$@"

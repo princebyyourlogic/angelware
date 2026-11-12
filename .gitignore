@@ -1,0 +1,7 @@
+disc/
+work/
+*.iso
+ghidra/*.gpr
+ghidra/*.rep/
+ghidra/*.lock*
+.env
