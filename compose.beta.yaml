@@ -1,0 +1,53 @@
+# Opt-in private beta diagnostics. Use together with compose.yaml.
+services:
+  angelware:
+    environment:
+      ANGELWARE_LOG_LEVEL: debug
+    logging:
+      driver: local
+      options:
+        max-size: "25m"
+        max-file: "20"
+
+  capture:
+    build: ./ops/capture
+    image: angelware:capture
+    restart: unless-stopped
+    network_mode: host
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    pids_limit: 32
+    mem_limit: 192m
+    cpus: 0.5
+    stop_grace_period: 15s
+    volumes:
+      - beta-captures:/captures
+    environment:
+      ANGELWARE_PORT: ${ANGELWARE_PORT:-3074}
+      ANGELWARE_STUN_ALT_PORT: ${ANGELWARE_STUN_ALT_PORT:-3075}
+      ANGELWARE_BRO: ${ANGELWARE_BRO:-on}
+      ANGELWARE_BRO_PORT: ${ANGELWARE_BRO_PORT:-2273}
+      ANGELWARE_BRO_ALT_PORT: ${ANGELWARE_BRO_ALT_PORT:-2274}
+      ANGELWARE_RELAY_PORTS: ${ANGELWARE_RELAY_PORTS:-20000-20199}
+      ANGELWARE_CAPTURE_INTERFACE: ${ANGELWARE_CAPTURE_INTERFACE:-any}
+      ANGELWARE_CAPTURE_HOURS: ${ANGELWARE_CAPTURE_HOURS:-72}
+      ANGELWARE_CAPTURE_MIB: ${ANGELWARE_CAPTURE_MIB:-8192}
+      ANGELWARE_CAPTURE_FREE_MIB: ${ANGELWARE_CAPTURE_FREE_MIB:-5120}
+    healthcheck:
+      test: [CMD, python, /app/capture.py, health]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  beta-captures:

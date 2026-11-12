@@ -23,5 +23,11 @@ jobs:
         run: go vet ./...
       - name: Test with race detector
         run: go test -race -count=1 ./...
+      - name: Test capture retention and incident selection
+        run: |
+          python3 -m unittest discover -s ops/capture -p 'test_*.py' -v
+          python3 -m unittest discover -s tools -p 'test_*.py' -v
       - name: Build production image
         run: docker build --tag angelware:ci .
+      - name: Build capture image
+        run: docker build --tag angelware:capture-ci ops/capture

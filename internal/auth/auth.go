@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/princebyyourlogic/angelware/internal/bitbuf"
 	"github.com/princebyyourlogic/angelware/internal/dwcrypto"
@@ -83,8 +84,10 @@ type Service struct {
 func (s *Service) Serve(ctx context.Context, conn net.Conn, r *bufio.Reader, first frame.Frame) {
 	log := s.Log.With("peer", conn.RemoteAddr().String())
 	for f := first; ; {
+		started := time.Now()
 		if reply, err := s.handle(ctx, log, f); err != nil {
-			log.Warn("auth request failed", "type", f.Type, "err", err)
+			log.Warn("auth request failed", "type", f.Type, "err", err,
+				"elapsed_ms", float64(time.Since(started).Microseconds())/1000)
 			return
 		} else {
 			if s.ObserveLogin != nil && f.Type == reqAuthAccount && !f.Encrypted && len(reply) >= 4 {
@@ -98,7 +101,12 @@ func (s *Service) Serve(ctx context.Context, conn net.Conn, r *bufio.Reader, fir
 					}
 				}
 			}
-			if _, err := conn.Write(reply); err != nil {
+			writeStarted := time.Now()
+			n, err := conn.Write(reply)
+			log.Debug("auth response sent", "type", f.Type, "bytes", n,
+				"elapsed_ms", float64(time.Since(started).Microseconds())/1000,
+				"write_ms", float64(time.Since(writeStarted).Microseconds())/1000, "err", err)
+			if err != nil {
 				return
 			}
 		}
