@@ -554,16 +554,16 @@ func TestStorage(t *testing.T) {
 		r := c.task(10, slot, 7, u8(0), u64(makerID), bitbuf.Int(bitbuf.U32, 0), bitbuf.Int(bitbuf.U16, 20))
 		n, _ := r.U32()
 		fs, _ := r.Fields()
-		if len(fs) != int(n)*7 {
+		if len(fs) != int(n)*8 { // u32 size + 7-field file info (0x6fdc8)
 			t.Fatalf("list of %d with %d fields", n, len(fs))
 		}
 		return fs
 	}
-	if fs := list(taker, 2); len(fs) != 7 || fs[0].Int != pub || string(fs[6].Bytes) != "Champion" ||
-		fs[5].Int != makerID || fs[3].Int != 1 || fs[4].Int != 0 {
+	if fs := list(taker, 2); len(fs) != 8 || fs[0].Int != uint64(len("superstar data")) || fs[1].Int != pub ||
+		string(fs[7].Bytes) != "Champion" || fs[6].Int != makerID || fs[4].Int != 1 || fs[5].Int != 0 {
 		t.Fatalf("taker sees %v", fs)
 	}
-	if fs := list(maker, 3); len(fs) != 14 {
+	if fs := list(maker, 3); len(fs) != 16 {
 		t.Fatalf("owner sees %d fields", len(fs))
 	}
 
@@ -584,11 +584,11 @@ func TestStorage(t *testing.T) {
 		t.Fatal("rename by another player succeeded")
 	}
 	maker.task(10, 8, 3, u8(0), u64(priv), str("Now public"), b(0))
-	if fs := list(taker, 9); len(fs) != 14 {
+	if fs := list(taker, 9); len(fs) != 16 {
 		t.Fatalf("after owner made it public: %d fields", len(fs))
 	}
 	maker.task(10, 10, 4, u8(0), u64(pub))
-	if fs := list(taker, 11); len(fs) != 7 || string(fs[6].Bytes) != "Now public" {
+	if fs := list(taker, 11); len(fs) != 8 || string(fs[7].Bytes) != "Now public" {
 		t.Fatalf("after owner removed one: %v", fs)
 	}
 	// Publisher (title) content: none.

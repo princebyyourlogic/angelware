@@ -176,7 +176,7 @@ func TestPostgres(t *testing.T) {
 	if err != nil || f.Name != "renamed" || !f.Visible || !f.Flag || len(f.Data) != 2 {
 		t.Fatalf("file %+v %v", f, err)
 	}
-	if fs, _ := p.FilesByOwner(ctx, id, false, 0, 10); len(fs) != 1 || fs[0].Data != nil {
+	if fs, _ := p.FilesByOwner(ctx, id, false, 0, 10); len(fs) != 1 || fs[0].Data != nil || fs[0].Size != 2 {
 		t.Fatalf("public listing %+v", fs)
 	}
 	p.DeleteFile(ctx, id, fid)

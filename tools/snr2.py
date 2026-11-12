@@ -5,7 +5,7 @@ SNR2 layout (SvR 2007), all little-endian u32:
   0x10 sym count  0x14 module path   0x18 entry         0x1c ctor runner
   0x2c file size
 Relocations are 12 bytes (offset, type | sym << 8, addend), types 4/5/6 =
-R_MIPS_26/HI16/LO16, and only ever reference undefined symbols (imports from
+R_MIPS_32/26/HI16/LO16 (2/4/5/6), and only ever reference undefined symbols (imports from
 the main ELF). Symbols are 12 bytes (name offset, value, hash). Names are GCC
 2.9x-mangled and obfuscated with a repeating 11-byte additive keystream over
 the 94 printable characters 0x21..0x7e. The main ELF carries an export table
@@ -112,7 +112,9 @@ def main():
         kind, sym = info & 0xFF, info >> 8
         target = stub[sym] + addend
         insn = struct.unpack_from('<I', d, off)[0]
-        if kind == 4:
+        if kind == 2:  # R_MIPS_32: a whole word holding the address
+            insn = target & 0xFFFFFFFF
+        elif kind == 4:
             insn = (insn & 0xFC000000) | (target >> 2) & 0x3FFFFFF
         elif kind == 5:
             insn = (insn & 0xFFFF0000) | ((target + 0x8000) >> 16)

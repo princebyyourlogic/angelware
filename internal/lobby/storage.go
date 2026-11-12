@@ -17,13 +17,18 @@ import (
 //	3 update params(u8, u64 file, string name, bool private)
 //	4 remove(u8, u64 file)
 //	5 download(u8, u64 file)                -> file info + blob data (0x701f8)
-//	7 list by user(u8, u64 user, u32 offset, u16 count) -> file infos
-//	8 list by publisher(u8, u32 offset, u16 count)      -> file infos (title content)
+//	7 list by user(u8, u64 user, u32 offset, u16 count) -> list entries
+//	8 list by publisher(u8, u32 offset, u16 count)      -> list entries (title content)
+//
+// A list entry (0x6fdc8) is u32 file size followed by the file info.
 //
 // File info (0x70470): u64 id, u32 created, u32 modified, bool flag, bool private,
 // u64 owner, string name (<= 127). The flag is echoed as the upload sent it. The
-// visibility bit is 0 for public (as in DemonWare's BD_VISIBLE_PUBLIC = 0): a
-// trade uploads the superstar with 0 and the partner then lists and downloads it.
+// visibility bit is 0 for public (as in DemonWare's BD_VISIBLE_PUBLIC = 0).
+//
+// Trade flow (OME2 0x12ef8): the host lists its own files, removes each one, then
+// uploads the created superstar (5184 bytes); the joiner lists the host's files
+// and downloads the first into a 0x1440-byte buffer.
 const (
 	stUpload    = 1
 	stUpdate    = 2
@@ -151,6 +156,7 @@ func (c *Conn) storage(ctx context.Context, t Task) []byte {
 		}
 		var out []bitbuf.Field
 		for _, f := range files {
+			out = append(out, bitbuf.Int(bitbuf.U32, uint64(f.Size)))
 			out = append(out, fileInfo(f)...)
 		}
 		return ListReply(t, uint32(len(files)), out)

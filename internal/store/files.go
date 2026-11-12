@@ -19,6 +19,7 @@ type File struct {
 	Flag     bool
 	Visible  bool
 	Data     []byte
+	Size     int // length of Data, also filled when listing without data
 	Created  time.Time
 	Modified time.Time
 }
@@ -61,6 +62,7 @@ func (m *Memory) File(_ context.Context, id uint64) (File, error) {
 	if !ok {
 		return f, ErrNotFound
 	}
+	f.Size = len(f.Data)
 	return f, nil
 }
 
@@ -70,7 +72,7 @@ func (m *Memory) FilesByOwner(_ context.Context, owner uint64, includePrivate bo
 	var out []File
 	for _, f := range m.f.files {
 		if f.Owner == owner && (f.Visible || includePrivate) {
-			f.Data = nil
+			f.Size, f.Data = len(f.Data), nil
 			out = append(out, f)
 		}
 	}
@@ -118,12 +120,12 @@ func (p *Postgres) CreateFile(ctx context.Context, f File) (uint64, error) {
 	return uint64(id), err
 }
 
-const fileColumns = `id, owner, name, flag, visible, created_at, modified_at`
+const fileColumns = `id, owner, name, flag, visible, length(data), created_at, modified_at`
 
 func scanFile(row pgx.Row, withData bool) (File, error) {
 	var f File
 	var id, owner int64
-	dest := []any{&id, &owner, &f.Name, &f.Flag, &f.Visible, &f.Created, &f.Modified}
+	dest := []any{&id, &owner, &f.Name, &f.Flag, &f.Visible, &f.Size, &f.Created, &f.Modified}
 	if withData {
 		dest = append(dest, &f.Data)
 	}
