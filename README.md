@@ -26,7 +26,14 @@
 
 ## Status
 
-The first supported game is **WWE SmackDown vs. Raw 2007** (US, `SLUS-214.27`, v1.01).
+Supported games:
+
+- **WWE SmackDown vs. Raw 2007** (US, `SLUS-214.27`, v1.01): the full online service.
+- **Call of Duty 2: Big Red One** (US): NAT detection and connecting players, with an optional relay
+  for players whose routers won't connect directly. Its lobby and matchmaking run on GameSpy
+  (OpenSpy), not DemonWare, so angelware only replaces the DemonWare STUN part.
+
+### WWE SmackDown vs. Raw 2007
 
 | | |
 | --- | --- |
@@ -42,6 +49,7 @@ The first supported game is **WWE SmackDown vs. Raw 2007** (US, `SLUS-214.27`, v
 | Ranked matchmaking and search filters | 🧪 implemented, not yet tested in game |
 | Trades (created superstar exchange) | ✅ |
 | Private sessions (hidden from search, joined by invite) | ✅ |
+| Change password, delete account, name checks | implemented, but the game never uses them |
 
 The retail game has been tested in PCSX2: two players signed up, found each other's session and played a
 match. Protocol notes are in [docs/svr2007-analysis.md](docs/svr2007-analysis.md).
@@ -53,7 +61,9 @@ match. Protocol notes are in [docs/svr2007-analysis.md](docs/svr2007-analysis.md
       │
       ├── DNAS check ──────────▶ community DNAS replacement (not part of angelware)
       ├── TCP 3074  ───────────▶ angelware: sign-up, login, lobby
-      └── UDP 3074/3075 ───────▶ angelware: NAT detection and connecting players
+      ├── UDP 3074/3075 ───────▶ angelware: NAT detection and connecting players (SvR 2007)
+      └── UDP 2273/2274 ───────▶ angelware: NAT detection and connecting players (CoD BRO)
+                                     └── UDP 20000-20199: relay endpoints for CoD BRO peers
                                      │
                                  PostgreSQL: accounts, profiles, stats
 ```
@@ -74,6 +84,14 @@ Point these names at the IP address of the machine running angelware (an `A` rec
 Optional, only used as fallbacks by the DemonWare library: `stun.us.demonware.net`,
 `stun.eu.demonware.net`, `stun.jp.demonware.net`, `stun.au.demonware.net`.
 
+For **Call of Duty 2: Big Red One**:
+
+| Hostname | Used for |
+| --- | --- |
+| `bro.stun.activision.com` | NAT detection, connecting players |
+
+BRO's GameSpy names go to OpenSpy as usual.
+
 **DNAS:** the game checks DNAS before going online. angelware does not handle this. Forward
 `*.dnas.playstation.org` lookups (the game asks for `gate1.us.dnas.playstation.org`) to the community
 DNAS replacement's resolver at **`45.7.228.197`**.
@@ -90,6 +108,7 @@ address=/smackdownvsraw2007.us.ps2.auth.mmp.demonware.net/203.0.113.10
 address=/smackdownvsraw2007.us.ps2.lsg.mmp.demonware.net/203.0.113.10
 address=/smackdownvsraw2007.stun.us.demonware.net/203.0.113.10
 address=/smackdownvsraw2007.stun.eu.demonware.net/203.0.113.10
+address=/bro.stun.activision.com/203.0.113.10
 server=/dnas.playstation.org/45.7.228.197
 ```
 
@@ -117,7 +136,8 @@ docker compose up -d --build
 docker compose logs -f angelware
 ```
 
-Open these in your firewall: **TCP 3074**, **UDP 3074** and **UDP 3075**.
+Open these in your firewall: **TCP 3074**, **UDP 3074-3075**, and for CoD BRO **UDP 2273-2274** and
+the relay range **UDP 20000-20199**.
 
 angelware runs with host networking so it sees each player's real address, which NAT detection needs.
 PostgreSQL is only reachable from the machine itself. Stop with `docker compose down`; add `-v` only if
@@ -134,12 +154,31 @@ All set in `.env`:
 | `ANGELWARE_BIND` | `0.0.0.0` | Address to listen on |
 | `ANGELWARE_PORT` | `3074` | Main port, TCP and UDP (the game expects 3074) |
 | `ANGELWARE_STUN_ALT_PORT` | `3075` | Second UDP port for NAT detection |
+| `ANGELWARE_STUN_MODE` | `direct` | SvR 2007 connection mode (see below) |
+| `ANGELWARE_BRO` | `on` | `off` disables the CoD BRO service |
+| `ANGELWARE_BRO_PORT`, `ANGELWARE_BRO_ALT_PORT` | `2273`, `2274` | CoD BRO's NAT detection ports |
+| `ANGELWARE_BRO_MODE` | `relay` | CoD BRO connection mode (see below) |
+| `ANGELWARE_RELAY_PORTS` | `20000-20199` | UDP ports for relay endpoints, one per player |
+| `ANGELWARE_RELAY_MAX_CLIENTS` | `64` | Players a title's relay serves at once |
+| `ANGELWARE_DIRECT_WINDOW` | `1.0` | Seconds `adaptive` lets a direct connection try before offering the relay |
 | `ANGELWARE_PG_PORT` | `55433` | Local-only port PostgreSQL is published on |
 | `ANGELWARE_AUTH_MODE` | `verify` | `verify` checks passwords. `open` lets anyone log in as any name |
 | `ANGELWARE_LOG_LEVEL` | `info` | `debug` logs every lobby request |
 
-`verify` has not been tested against the game yet. If logins fail with it, `open` matches the behaviour
-that was tested (but has no password check).
+### Connection modes
+
+Each game's NAT service runs in one of three modes, all on a single public IPv4 address:
+
+- **`direct`**: players connect to each other directly; angelware only introduces them. Players
+  behind strict NATs may fail to connect. This is how SvR 2007 has been tested.
+- **`relay`**: every player is given a relay endpoint on this server and all peer traffic flows
+  through it. The game sees every player as Open NAT, so anyone can play with anyone, at the cost of
+  server bandwidth and an extra hop.
+- **`adaptive`**: players keep their real addresses and try to connect directly first. If a direct
+  connection hasn't worked within `ANGELWARE_DIRECT_WINDOW`, the relay is offered instead.
+
+All players must sign in again and create new rooms after the mode changes. The relay and adaptive
+modes are a port of codstun, written for CoD BRO; for SvR 2007 they are untested.
 
 ### Accounts and privacy
 
@@ -165,7 +204,7 @@ The PostgreSQL test in `internal/store` runs when `ANGELWARE_TEST_DATABASE_URL` 
 | `internal/server` | TCP listener that sends each connection to login or the lobby |
 | `internal/auth` | Sign-up and login |
 | `internal/lobby` | Lobby connection, matchmaking, profiles, stats |
-| `internal/stun` | NAT detection and connecting players |
+| `internal/stun` | NAT detection, connecting players, relay (per game) |
 | `internal/store` | PostgreSQL (and in-memory storage for tests) |
 | `internal/bitbuf`, `frame`, `dwcrypto`, `session` | DemonWare's wire format, encryption and login tickets |
 | `tools/` | Disc extraction helpers for reverse engineering. They need your own disc and are not used by the server |

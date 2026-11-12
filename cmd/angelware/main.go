@@ -1,8 +1,10 @@
-// Command angelware is a DemonWare replacement for WWE SmackDown vs. Raw 2007 (PS2).
+// Command angelware is a DemonWare replacement for PS2 titles.
 //
-// It serves the auth service and lobby service gateway on TCP 3074 and STUN/NAT
-// discovery on UDP 3074 and 3075. DNS redirection of the game's demonware.net names
-// to this host is handled elsewhere.
+// For WWE SmackDown vs. Raw 2007 it serves the auth service and lobby service
+// gateway on TCP 3074 and STUN/NAT on UDP 3074 and 3075. For Call of Duty 2: Big
+// Red One (matchmaking via GameSpy elsewhere) it serves STUN/NAT on UDP 2273 and
+// 2274, by default with peer traffic relayed through UDP 20000-20199. DNS
+// redirection of the games' hostnames to this host is handled elsewhere.
 package main
 
 import (
@@ -15,7 +17,9 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/princebyyourlogic/angelware/internal/auth"
 	"github.com/princebyyourlogic/angelware/internal/lobby"
@@ -33,6 +37,12 @@ type config struct {
 	DatabaseURL string
 	AuthMode    auth.Mode
 	LogLevel    slog.Level
+	STUN        []stunTitle
+}
+
+type stunTitle struct {
+	name string
+	stun.Config
 }
 
 func env(key, def string) string {
@@ -61,7 +71,59 @@ func loadConfig() (config, error) {
 	if err := c.LogLevel.UnmarshalText([]byte(env("ANGELWARE_LOG_LEVEL", "info"))); err != nil {
 		return c, fmt.Errorf("ANGELWARE_LOG_LEVEL: %w", err)
 	}
-	return c, nil
+	return c, c.loadSTUN()
+}
+
+// loadSTUN configures one STUN service per title; they share the public IP and
+// the relay port range.
+func (c *config) loadSTUN() error {
+	shared := stun.Config{PublicIP: c.PublicIP}
+	var err error
+	if shared.RelayLo, shared.RelayHi, err = portRange(env("ANGELWARE_RELAY_PORTS", "20000-20199")); err != nil {
+		return fmt.Errorf("ANGELWARE_RELAY_PORTS: %w", err)
+	}
+	if shared.RelayMaxClients, err = strconv.Atoi(env("ANGELWARE_RELAY_MAX_CLIENTS", "64")); err != nil {
+		return fmt.Errorf("ANGELWARE_RELAY_MAX_CLIENTS: %w", err)
+	}
+	window, err := strconv.ParseFloat(env("ANGELWARE_DIRECT_WINDOW", "1.0"), 64)
+	if err != nil {
+		return fmt.Errorf("ANGELWARE_DIRECT_WINDOW: %w", err)
+	}
+	shared.DirectWindow = time.Duration(window * float64(time.Second))
+
+	svr := shared
+	svr.Port, svr.AltPort = c.Port, c.STUNAltPort
+	svr.Mode = stun.Mode(env("ANGELWARE_STUN_MODE", string(stun.Direct)))
+	c.STUN = append(c.STUN, stunTitle{"svr2007", svr})
+
+	if env("ANGELWARE_BRO", "on") != "off" {
+		bro := shared
+		bro.Mode = stun.Mode(env("ANGELWARE_BRO_MODE", string(stun.Relay)))
+		if bro.Port, err = strconv.Atoi(env("ANGELWARE_BRO_PORT", "2273")); err != nil {
+			return fmt.Errorf("ANGELWARE_BRO_PORT: %w", err)
+		}
+		if bro.AltPort, err = strconv.Atoi(env("ANGELWARE_BRO_ALT_PORT", "2274")); err != nil {
+			return fmt.Errorf("ANGELWARE_BRO_ALT_PORT: %w", err)
+		}
+		c.STUN = append(c.STUN, stunTitle{"cod-bro", bro})
+	}
+	for _, t := range c.STUN {
+		if err := t.Validate(); err != nil {
+			return fmt.Errorf("%s stun: %w", t.name, err)
+		}
+	}
+	return nil
+}
+
+func portRange(s string) (lo, hi int, err error) {
+	a, b, ok := strings.Cut(s, "-")
+	if !ok {
+		return 0, 0, errors.New("want LOW-HIGH")
+	}
+	if lo, err = strconv.Atoi(a); err == nil {
+		hi, err = strconv.Atoi(b)
+	}
+	return lo, hi, err
 }
 
 func main() {
@@ -104,14 +166,14 @@ func run(cfg config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	stunSrv := &stun.Server{PublicIP: cfg.PublicIP, Port: cfg.Port, AltPort: cfg.STUNAltPort,
-		Log: log.With("svc", "stun")}
-
-	errs := make(chan error, 2)
+	errs := make(chan error, 1+len(cfg.STUN))
 	go func() { errs <- tcp.Serve(ctx, ln) }()
-	go func() { errs <- stunSrv.Run(ctx, cfg.Bind) }()
-	log.Info("angelware listening", "bind", cfg.Bind, "tcp", cfg.Port, "udp", []int{cfg.Port, cfg.STUNAltPort},
-		"public_ip", cfg.PublicIP.String(), "auth_mode", cfg.AuthMode, "postgres", cfg.DatabaseURL != "")
+	for _, t := range cfg.STUN {
+		srv := &stun.Server{Config: t.Config, Bind: cfg.Bind, Log: log.With("svc", "stun", "title", t.name)}
+		go func() { errs <- srv.Run(ctx) }()
+	}
+	log.Info("angelware listening", "bind", cfg.Bind, "tcp", cfg.Port, "public_ip", cfg.PublicIP.String(),
+		"auth_mode", cfg.AuthMode, "postgres", cfg.DatabaseURL != "")
 	err = <-errs
 	stop()
 	return err

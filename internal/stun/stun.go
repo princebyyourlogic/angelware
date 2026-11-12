@@ -1,26 +1,18 @@
-// Package stun implements DemonWare IP and NAT-type discovery and peer introduction
-// (bdIPDiscoveryClient, bdNATTypeDiscoveryClient, bdNATTravClient).
+// Package stun implements DemonWare's UDP NAT services (bdIPDiscoveryClient,
+// bdNATTypeDiscoveryClient, bdNATTravClient) for several titles at once, each on
+// its own pair of ports, from one public IPv4 address. The relay and adaptive
+// modes are a port of codstun, written for Call of Duty 2: Big Red One.
 //
-// SvR 2007 sends the packed version 2 header (u8 type, u16 LE version); the reply
-// parsers (LBYM 0xad328, 0xadba0) accept v2 packed or v1 padded, and we answer in
-// the client's version. Addresses are 4 IPv4 octets + u16 LE port.
-//
-//	0x1e IP request             -> 0x1f: observed endpoint
+//	0x1e IP request             -> 0x1f: observed (or virtual) endpoint
 //	0x14 NAT request, u8 flags  -> 0x15: observed endpoint, alternate endpoint
+//	0x0a introduction           -> 0x0b to the target (signed bytes unchanged)
+//	0x0e keepalive, every 15 s from hosts
 //
-// With one server IP the change-IP test (flags 3) is withheld; the client then runs
-// test 3 (flags 2), answered from the secondary port, and settles on "Moderate".
-//
-// Introduction (29 bytes: type, u16 version 2, HMAC[10], u32 id, initiator addr,
-// target addr): a joining player sends 0x0a; we forward it as 0x0b to the target,
-// which answers the initiator directly. Hosts refresh their mapping with 0x0e every
-// 15 s. The initiator must match its UDP source and the target must have been seen
-// recently (as in ../codstun), so this cannot be used to send UDP anywhere.
+// SvR 2007 uses UDP 3074/3075; BRO uses 2273/2274.
 package stun
 
 import (
 	"context"
-	"encoding/binary"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -29,59 +21,61 @@ import (
 	"time"
 )
 
-const (
-	ipRequest    = 0x1E
-	ipReply      = 0x1F
-	natRequest   = 0x14
-	natReply     = 0x15
-	introRequest = 0x0A
-	introForward = 0x0B
-	keepalive    = 0x0E
+const tickInterval = 100 * time.Millisecond
 
-	changeIP   = 1
-	changePort = 2
-	introSize  = 29
-	peerTTL    = 2 * time.Minute
-	maxPeers   = 4096
-)
-
+// Server runs one title's Router on real sockets.
 type Server struct {
-	PublicIP netip.Addr // advertised as the alternate endpoint's address
-	Port     int        // primary (3074)
-	AltPort  int        // secondary, used for NAT test 3
-	Log      *slog.Logger
+	Config
+	Bind string
+	Log  *slog.Logger
 
-	primary, secondary *net.UDPConn
-	mu                 sync.Mutex
-	seen               map[netip.AddrPort]time.Time
+	mu     sync.Mutex
+	router *Router
+	ports  [2]*net.UDPConn
+	relays map[int]*net.UDPConn
 }
 
-// Run serves both UDP ports until ctx ends.
-func (s *Server) Run(ctx context.Context, bind string) error {
-	var err error
-	s.seen = map[netip.AddrPort]time.Time{}
-	if s.primary, err = listen(bind, s.Port); err != nil {
+// Run serves until ctx ends.
+func (s *Server) Run(ctx context.Context) error {
+	if err := s.Validate(); err != nil {
 		return err
 	}
-	if s.secondary, err = listen(bind, s.AltPort); err != nil {
-		s.primary.Close()
-		return err
+	s.relays = map[int]*net.UDPConn{}
+	s.router = NewRouter(s.Config, s.Log, s.allocate, s.release)
+	for i, port := range []int{s.Port, s.AltPort} {
+		c, err := listen(s.Bind, port)
+		if err != nil {
+			s.closeAll()
+			return err
+		}
+		s.ports[i] = c
 	}
-	go func() {
-		<-ctx.Done()
-		s.primary.Close()
-		s.secondary.Close()
-	}()
+	s.Log.Info("stun listening", "udp", []int{s.Port, s.AltPort}, "mode", s.Mode)
+
 	var wg sync.WaitGroup
-	for _, c := range []*net.UDPConn{s.primary, s.secondary} {
+	for i, c := range s.ports {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.read(c)
+			s.read(c, func(b []byte, from netip.AddrPort) []Outbound {
+				return s.router.Route(b, from, Listener{Alt: i == 1}, time.Now())
+			})
 		}()
 	}
-	wg.Wait()
-	return ctx.Err()
+	t := time.NewTicker(tickInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			s.closeAll()
+			wg.Wait()
+			return ctx.Err()
+		case <-t.C:
+			s.mu.Lock()
+			out := s.router.Tick(time.Now())
+			s.dispatch(out)
+		}
+	}
 }
 
 func listen(bind string, port int) (*net.UDPConn, error) {
@@ -92,120 +86,76 @@ func listen(bind string, port int) (*net.UDPConn, error) {
 	return net.ListenUDP("udp4", addr)
 }
 
-func (s *Server) read(c *net.UDPConn) {
-	buf := make([]byte, 1500)
+// read passes each datagram to handle under the lock and sends its replies.
+func (s *Server) read(c *net.UDPConn, handle func([]byte, netip.AddrPort) []Outbound) {
+	buf := make([]byte, maxDatagram+1)
 	for {
 		n, from, err := c.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return
 		}
-		s.Handle(buf[:n], netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), s.send)
+		from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
+		s.mu.Lock()
+		s.dispatch(handle(buf[:n], from))
 	}
 }
 
-func (s *Server) send(secondary bool, b []byte, to netip.AddrPort) {
-	c := s.primary
-	if secondary {
-		c = s.secondary
-	}
-	c.WriteToUDPAddrPort(b, to)
-}
-
-// Handle processes one datagram; send writes from the primary or secondary port.
-func (s *Server) Handle(data []byte, from netip.AddrPort, send func(secondary bool, b []byte, to netip.AddrPort)) {
-	now := time.Now()
-	s.mu.Lock()
-	s.seen[from] = now
-	if len(s.seen) > maxPeers {
-		for a, t := range s.seen {
-			if now.Sub(t) > peerTTL {
-				delete(s.seen, a)
-			}
+// dispatch resolves each reply's socket, releases the lock, and sends.
+func (s *Server) dispatch(out []Outbound) {
+	conns := make([]*net.UDPConn, len(out))
+	for i, o := range out {
+		switch {
+		case o.From.Relay != 0:
+			conns[i] = s.relays[o.From.Relay]
+		case o.From.Alt:
+			conns[i] = s.ports[1]
+		default:
+			conns[i] = s.ports[0]
 		}
 	}
 	s.mu.Unlock()
-
-	msgType, version, body, ok := parse(data)
-	if !ok {
-		s.Log.Debug("unknown udp packet", "from", from, "data", data)
-		return
-	}
-	switch msgType {
-	case ipRequest:
-		send(false, append(header(ipReply, version), pad(version, packAddr(from))...), from)
-	case natRequest:
-		if len(body) < 1 {
-			return
+	for i, o := range out {
+		if conns[i] == nil {
+			continue
 		}
-		flags := body[0]
-		if flags&changeIP != 0 {
-			return // single server IP: let the client time out into test 3
+		if _, err := conns[i].WriteToUDPAddrPort(o.Payload, o.To); err != nil {
+			s.Log.Debug("udp send failed", "to", o.To, "reason", o.Reason, "err", err)
 		}
-		alternate := netip.AddrPortFrom(s.PublicIP, uint16(s.Port))
-		reply := append(header(natReply, version), pad(version, packAddr(from))...)
-		send(flags&changePort != 0, append(reply, packAddr(alternate)...), from)
-	case keepalive:
-	case introRequest:
-		if version == 2 && len(data) == introSize {
-			s.introduce(data, from, now, send)
-		}
-	default:
-		s.Log.Debug("unhandled udp packet", "from", from, "type", msgType, "version", version)
 	}
 }
 
-func (s *Server) introduce(data []byte, from netip.AddrPort, now time.Time,
-	send func(bool, []byte, netip.AddrPort)) {
-	initiator, target := unpackAddr(data[17:23]), unpackAddr(data[23:29])
-	if initiator != from {
-		s.Log.Info("introduction source mismatch", "from", from, "claims", initiator)
-		return
+// allocate binds the first free port in the relay range (called with s.mu held).
+// Ports held by another title's relay fail to bind and are skipped.
+func (s *Server) allocate(id int) (netip.AddrPort, error) {
+	var err error
+	for port := s.RelayLo; port <= s.RelayHi; port++ {
+		var c *net.UDPConn
+		if c, err = listen(s.Bind, port); err != nil {
+			continue
+		}
+		s.relays[id] = c
+		go s.read(c, func(b []byte, from netip.AddrPort) []Outbound {
+			return s.router.ReceiveRelay(id, b, from, time.Now())
+		})
+		return netip.AddrPortFrom(s.PublicIP, uint16(port)), nil
 	}
+	return netip.AddrPort{}, err
+}
+
+func (s *Server) release(id int) {
+	if c := s.relays[id]; c != nil {
+		c.Close()
+		delete(s.relays, id)
+	}
+}
+
+func (s *Server) closeAll() {
 	s.mu.Lock()
-	last, ok := s.seen[target]
-	s.mu.Unlock()
-	if !ok || target == from || now.Sub(last) > peerTTL {
-		s.Log.Info("introduction target not seen recently", "from", from, "target", target)
-		return
+	defer s.mu.Unlock()
+	s.router.Close()
+	for _, c := range s.ports {
+		if c != nil {
+			c.Close()
+		}
 	}
-	s.Log.Info("introduction forwarded", "from", from, "target", target)
-	out := append([]byte{introForward}, data[1:]...)
-	send(false, out, target)
-}
-
-func parse(b []byte) (msgType uint8, version uint16, body []byte, ok bool) {
-	if len(b) < 3 {
-		return
-	}
-	if v := binary.LittleEndian.Uint16(b[1:]); v == 2 {
-		return b[0], 2, b[3:], true
-	}
-	if len(b) >= 4 && binary.LittleEndian.Uint16(b[2:]) == 1 {
-		return b[0], 1, b[4:], true
-	}
-	return
-}
-
-func header(msgType uint8, version uint16) []byte {
-	if version == 2 {
-		return []byte{msgType, 2, 0}
-	}
-	return []byte{msgType, 0, 1, 0}
-}
-
-// pad appends v1's two padding bytes after an address.
-func pad(version uint16, addr []byte) []byte {
-	if version == 2 {
-		return addr
-	}
-	return append(addr, 0, 0)
-}
-
-func packAddr(a netip.AddrPort) []byte {
-	ip := a.Addr().As4()
-	return binary.LittleEndian.AppendUint16(ip[:], a.Port())
-}
-
-func unpackAddr(b []byte) netip.AddrPort {
-	return netip.AddrPortFrom(netip.AddrFrom4([4]byte(b[:4])), binary.LittleEndian.Uint16(b[4:]))
 }
