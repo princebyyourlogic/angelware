@@ -132,17 +132,19 @@ blob[48]` has no named accessors; captured values were all zero (inferred: unuse
 | 2 | 1 delete | u8, i32 board, u64 user | none |
 | 3 | 2 read by user | u8, i32 board, u64 user | rows |
 | 4 | 3 read several users | u8, i32 board, u32 n, n × u64 user | rows (inferred: friends board) |
-| 5 | 5 read by rank | u8, i32 board, u64 start, u64 0, i64 50 | rows |
+| 5 | 5 read around user | u8, i32 board, u64 user, u64 0, i64 50 | rows (confirmed from the caller in `FUN_0002a218`) |
 | 6 | 4 read (other) | u8, u64, object | rows |
-| 5 | 6 read around user | u8, i32 board, u64 0, u64 user, i64 50 | rows |
+| 5 | 6 read by rank | u8, i32 board, u64 0, u64 start position, i64 50 | rows |
 | 7, 9 | | multiple boards in one task | none |
 | 8 | | u8, blob, u32 | |
 
 Result (`FUN_0006ef98`): envelope with taskID; tasks 3-6 then carry `u32 count` and rows.
 
-**Row read** (`0x6f328` plus the board's columns): `u64 entityID (user), i64 rating, u64 rank, string
-entryName (≤32 chars)`, then the board's extra columns (confirmed order of types; the entity/rating/rank
-naming follows `CStatsInfo` Rating/Rank/EntryID/EntryName and is inferred for the two u64s).
+**Row read** (`0x6f328` plus the board's columns): `u64 user, i64 rating, u64 rank, string name (≤63)`,
+then the board's extra columns. Column readers: `0xbd108` 12 × i32 (board 1), `0xbdf88` 32 × i32
+(board 10), `0xbeda8`/`0xbf458` 6 × i32 (boards 19/23), `0xbcba0` none (rating-only boards). The
+columns the game writes for a board are exactly what it reads back, so angelware returns stored rows
+unchanged. angelware serves tasks 3, 4 and 5; task 6 returns no rows.
 **Row write**: `i64 rating`, then the board's extra columns.
 
 ### Boards

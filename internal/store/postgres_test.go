@@ -125,4 +125,25 @@ func TestPostgres(t *testing.T) {
 	if inbox, _ := p.Inbox(ctx, other, 0, 20); len(inbox) != 0 {
 		t.Fatal("ack did not remove the message")
 	}
+
+	// Leaderboard ranking on a board of its own.
+	const lb = 9001
+	p.pool.Exec(ctx, `DELETE FROM stats WHERE board = $1`, lb)
+	for i, rating := range []int64{10, 30, 20, 30} {
+		p.WriteStats(ctx, uint64(1000+i), StatsRow{Board: lb, Rating: rating, Values: []int32{int32(i)}})
+	}
+	top, err := p.StatsFrom(ctx, lb, 1, 10)
+	if err != nil || len(top) != 4 || top[0].Rating != 30 || top[1].Rank != 1 || top[2].Rank != 3 || top[3].Rank != 4 {
+		t.Fatalf("StatsFrom %+v %v", top, err)
+	}
+	if rows, err := p.StatsFor(ctx, lb, []uint64{1000, 77}); err != nil || len(rows) != 1 || rows[0].Rank != 4 {
+		t.Fatalf("StatsFor %+v %v", rows, err)
+	}
+	if rows, err := p.StatsAround(ctx, lb, 1000, 2); err != nil || len(rows) != 2 || rows[1].UserID != 1000 {
+		t.Fatalf("StatsAround %+v %v", rows, err)
+	}
+	if rows, err := p.StatsAround(ctx, lb, 77, 2); err != nil || len(rows) != 0 {
+		t.Fatalf("StatsAround missing %+v %v", rows, err)
+	}
+	p.pool.Exec(ctx, `DELETE FROM stats WHERE board = $1`, lb)
 }

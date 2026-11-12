@@ -7,23 +7,33 @@ import (
 	"github.com/princebyyourlogic/angelware/internal/store"
 )
 
-// Stats, lobby service 4 (lobby tasks 0x22..0x29 and WriteDna):
+// Stats, lobby service 4 (senders LBYM 0x6e2c8..0x6ecb8, lobby tasks 0x22..0x29
+// and WriteDna):
 //
-//	1 write(u8, u8 flag, i32 board, u64, i64 rating, i32 values...)
-//	3 read(u8, i32 board, u64 user)
+//	1 write(u8, u8 flag, i32 board, u64 0, i64 rating, i32 values...)
+//	3 read players(u8, i32 board, u64 user)
+//	4 read players(u8, i32 board, u32 n, n x u64 user)
+//	5 read range(u8, i32 board, u64 user, u64 position, i64 count)
+//	  user != 0: rows around that player; user == 0: rows from a 1-based position
+//	6 read filtered(u8, u64, object): answered with no rows
 //
-// Writes are stored. The read result layout has not been decoded yet, so reads
-// still get an empty success, which the game tolerates.
+// Read results (0x6ef98): u32 count, then rows of u64 user, i64 rating, u64 rank,
+// string name (0x6f328), followed by the board's columns exactly as the game
+// wrote them (board 1: 12 x i32, 10: 32, 19 and 23: 6, score-only boards: none).
 const (
-	statsWrite = 1
+	statsWrite      = 1
+	statsReadUser   = 3
+	statsReadUsers  = 4
+	statsReadRange  = 5
+	statsReadFilter = 6
+	statsMaxRows    = 100
 )
 
 func (c *Conn) stats(ctx context.Context, t Task) []byte {
+	if t.ID >= statsReadUser && t.ID <= statsReadFilter {
+		return c.statsRead(ctx, t)
+	}
 	if t.ID != statsWrite {
-		// Reads (3-6) are lists; leaderboards are not served yet.
-		if t.ID >= 3 && t.ID <= 6 {
-			return ListReply(t, 0, nil)
-		}
 		return Reply(t, nil)
 	}
 	fields, err := t.Args.Fields()
@@ -44,4 +54,53 @@ func (c *Conn) stats(ctx context.Context, t Task) []byte {
 	}
 	c.log.Debug("stats written", "board", row.Board, "rating", row.Rating, "values", len(row.Values))
 	return Reply(t, nil)
+}
+
+func (c *Conn) statsRead(ctx context.Context, t Task) []byte {
+	fields, err := t.Args.Fields()
+	if err != nil || len(fields) < 2 || t.ID == statsReadFilter {
+		if err != nil {
+			c.log.Warn("stats read did not parse", "task", t.ID, "err", err)
+		}
+		return ListReply(t, 0, nil)
+	}
+	board := int32(fields[1].Int)
+	args := fields[2:]
+	st := c.srv.Store
+	var rows []store.RankedRow
+	switch t.ID {
+	case statsReadUser, statsReadUsers:
+		var users []uint64
+		for _, f := range args {
+			if f.Type == bitbuf.U64 {
+				users = append(users, f.Int)
+			}
+		}
+		rows, err = st.StatsFor(ctx, board, users)
+	case statsReadRange:
+		if len(args) < 3 {
+			return ListReply(t, 0, nil)
+		}
+		user, position := args[0].Int, int(args[1].Int)
+		limit := min(int(int64(args[2].Int)), statsMaxRows)
+		if user != 0 {
+			rows, err = st.StatsAround(ctx, board, user, limit)
+		} else {
+			rows, err = st.StatsFrom(ctx, board, position, limit)
+		}
+	}
+	if err != nil {
+		c.log.Error("read stats", "board", board, "err", err)
+		return ListReply(t, 0, nil)
+	}
+	var out []bitbuf.Field
+	for _, r := range rows {
+		out = append(out, bitbuf.Int(bitbuf.U64, r.UserID), bitbuf.Int(bitbuf.I64, uint64(r.Rating)),
+			bitbuf.Int(bitbuf.U64, r.Rank), bitbuf.Bytes(bitbuf.String, []byte(truncate(r.Name, 63))))
+		for _, v := range r.Values {
+			out = append(out, bitbuf.Int(bitbuf.I32, uint64(uint32(v))))
+		}
+	}
+	c.log.Debug("stats read", "task", t.ID, "board", board, "rows", len(rows))
+	return ListReply(t, uint32(len(rows)), out)
 }

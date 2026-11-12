@@ -51,6 +51,7 @@ type Store interface {
 	DeleteProfile(ctx context.Context, userID uint64) error
 	WriteStats(ctx context.Context, userID uint64, row StatsRow) error
 	Social
+	Leaderboards
 	Close()
 }
 

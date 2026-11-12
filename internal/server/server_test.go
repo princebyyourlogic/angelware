@@ -416,3 +416,87 @@ func TestRepeatedAndCrossedFriendRequests(t *testing.T) {
 		t.Fatalf("request left behind: %v", reqs)
 	}
 }
+
+// writeBoard1 sends a board-1 stats write (rating + 12 columns) like the game.
+func (c *client) writeBoard1(slot uint8, rating int64, first int32) {
+	args := []bitbuf.Field{u8(0), u8(0), bitbuf.Int(bitbuf.I32, 1), u64(0), bitbuf.Int(bitbuf.I64, uint64(rating))}
+	for i := 0; i < 12; i++ {
+		v := int32(0)
+		if i == 0 {
+			v = first
+		}
+		args = append(args, bitbuf.Int(bitbuf.I32, uint64(uint32(v))))
+	}
+	c.task(4, slot, 1, args...)
+}
+
+type row struct {
+	user   uint64
+	rating int64
+	rank   uint64
+	name   string
+	values []int32
+}
+
+// readRows parses a stats read reply after the envelope.
+func readRows(t *testing.T, r *bitbuf.Reader, columns int) []row {
+	t.Helper()
+	n, _ := r.U32()
+	fs, err := r.Fields()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []row
+	for i := 0; i < int(n); i++ {
+		rw := row{user: fs[0].Int, rating: int64(fs[1].Int), rank: fs[2].Int, name: string(fs[3].Bytes)}
+		for _, f := range fs[4 : 4+columns] {
+			rw.values = append(rw.values, int32(f.Int))
+		}
+		out = append(out, rw)
+		fs = fs[4+columns:]
+	}
+	return out
+}
+
+func TestLeaderboards(t *testing.T) {
+	s, _ := newTCP(auth.Verify)
+	names := []string{"low", "mid", "top", "tie"}
+	clients := map[string]*client{}
+	for _, n := range names {
+		dial(t, s).roundTrip(signup(n, n+"pw"))
+		clients[n] = loginAndOpenGateway(t, s, n, n+"pw")
+	}
+	clients["low"].writeBoard1(1, 10, 1)
+	clients["mid"].writeBoard1(1, 20, 2)
+	clients["top"].writeBoard1(1, 30, 3)
+	clients["tie"].writeBoard1(1, 20, 4)
+	board := bitbuf.Int(bitbuf.I32, 1)
+	id := func(n string) uint64 { return dwcrypto.UserID([]byte(n)) }
+
+	// Task 3: one player's row, with rank, name and the 12 columns.
+	rows := readRows(t, clients["low"].task(4, 2, 3, u8(0), board, u64(id("low"))), 12)
+	if len(rows) != 1 || rows[0].rank != 4 || rows[0].name != "low" || rows[0].rating != 10 ||
+		len(rows[0].values) != 12 || rows[0].values[0] != 1 {
+		t.Fatalf("own row %+v", rows)
+	}
+	// Task 5 from rank 1: ordered by rating, equal ratings share a rank.
+	rows = readRows(t, clients["low"].task(4, 3, 5, u8(0), board, u64(0), u64(1), bitbuf.Int(bitbuf.I64, 50)), 12)
+	if len(rows) != 4 || rows[0].name != "top" || rows[1].rank != 2 || rows[2].rank != 2 || rows[3].rank != 4 {
+		t.Fatalf("top list %+v", rows)
+	}
+	// Task 5 around a player, limited window.
+	rows = readRows(t, clients["low"].task(4, 4, 5, u8(0), board, u64(id("low")), u64(0), bitbuf.Int(bitbuf.I64, 2)), 12)
+	if len(rows) != 2 || rows[1].name != "low" {
+		t.Fatalf("around %+v", rows)
+	}
+	// Task 4: several players; unknown ones are skipped.
+	rows = readRows(t, clients["low"].task(4, 5, 4, u8(0), board, bitbuf.Int(bitbuf.U32, 3), u64(id("top")),
+		u64(id("low")), u64(12345)), 12)
+	if len(rows) != 2 {
+		t.Fatalf("several %+v", rows)
+	}
+	// A board nobody wrote: no rows.
+	if rows = readRows(t, clients["low"].task(4, 6, 3, u8(0), bitbuf.Int(bitbuf.I32, 10), u64(id("low"))), 32); len(rows) != 0 {
+		t.Fatalf("empty board %+v", rows)
+	}
+}
