@@ -16,11 +16,13 @@ import (
 //	2 update data(u8, u64 file, blob data)
 //	3 update params(u8, u64 file, string name, bool private)
 //	4 remove(u8, u64 file)
-//	5 download(u8, u64 file)                -> file info + blob data (0x701f8)
+//	5 download(u8, u64 file)                -> u32 size, file info, blob data (0x6f908/0x701f8)
 //	7 list by user(u8, u64 user, u32 offset, u16 count) -> list entries
 //	8 list by publisher(u8, u32 offset, u16 count)      -> list entries (title content)
 //
-// A list entry (0x6fdc8) is u32 file size followed by the file info.
+// A list entry (0x6fdc8) is u32 file size followed by the file info. A download
+// result (0x6f908) is one such entry plus the data blob; the client takes the
+// count as 1 for tasks 1 and 5, so no count precedes it.
 //
 // File info (0x70470): u64 id, u32 created, u32 modified, bool flag, bool private,
 // u64 owner, string name (<= 127). The flag is echoed as the upload sent it. The
@@ -137,7 +139,8 @@ func (c *Conn) storage(ctx context.Context, t Task) []byte {
 			return ErrorReply(t, storageError)
 		}
 		c.log.Info("file downloaded", "file", f.ID, "owner", f.Owner)
-		return Reply(t, append(fileInfo(f), bitbuf.Bytes(bitbuf.Blob, f.Data)))
+		out := append([]bitbuf.Field{bitbuf.Int(bitbuf.U32, uint64(len(f.Data)))}, fileInfo(f)...)
+		return Reply(t, append(out, bitbuf.Bytes(bitbuf.Blob, f.Data)))
 	case stByUser:
 		user, ok := arg(0, bitbuf.U64)
 		if !ok {

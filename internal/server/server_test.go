@@ -570,7 +570,8 @@ func TestStorage(t *testing.T) {
 	// Download: public data comes back; private and unknown files fail.
 	r := taker.task(10, 4, 5, u8(0), u64(pub))
 	fs, _ := r.Fields()
-	if len(fs) != 8 || string(fs[7].Bytes) != "superstar data" {
+	if len(fs) != 9 || fs[0].Int != uint64(len("superstar data")) || fs[1].Int != pub ||
+		string(fs[8].Bytes) != "superstar data" {
 		t.Fatalf("download %v", fs)
 	}
 	for _, id := range []uint64{priv, 9999} {
