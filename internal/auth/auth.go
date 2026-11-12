@@ -74,6 +74,9 @@ type Service struct {
 	Sessions *session.Registry
 	Mode     Mode
 	Log      *slog.Logger
+	// ObserveLogin records a successful login's public IV seed for the optional
+	// SvR relay rewriter. It must not block on key recovery.
+	ObserveLogin func(net.Addr, uint32)
 }
 
 // Serve answers requests on one auth connection, starting with first.
@@ -83,8 +86,21 @@ func (s *Service) Serve(ctx context.Context, conn net.Conn, r *bufio.Reader, fir
 		if reply, err := s.handle(ctx, log, f); err != nil {
 			log.Warn("auth request failed", "type", f.Type, "err", err)
 			return
-		} else if _, err := conn.Write(reply); err != nil {
-			return
+		} else {
+			if s.ObserveLogin != nil && f.Type == reqAuthAccount && !f.Encrypted && len(reply) >= 4 {
+				response, rerr := bitbuf.NewReader(reply[4:])
+				request, qerr := bitbuf.NewReader(f.Payload)
+				if rerr == nil && qerr == nil {
+					code, e := response.U32()
+					seed, e2 := request.U32()
+					if e == nil && e2 == nil && code == statusOK {
+						s.ObserveLogin(conn.RemoteAddr(), seed)
+					}
+				}
+			}
+			if _, err := conn.Write(reply); err != nil {
+				return
+			}
 		}
 		var err error
 		if f, err = frame.Read(r); err != nil {

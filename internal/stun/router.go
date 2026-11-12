@@ -32,6 +32,10 @@ type Config struct {
 	RelayHi         int
 	RelayMaxClients int
 	DirectWindow    time.Duration // adaptive only
+	// RewritePeer is an optional title-specific transform on admitted relay
+	// traffic. Direct traffic and titles that leave it nil remain opaque.
+	RewritePeer func(sender, destination int, senderControl, senderVirtual,
+		destinationControl, destinationVirtual netip.AddrPort, packet []byte, now time.Time) []byte
 }
 
 const (
@@ -114,6 +118,7 @@ func NewRouter(cfg Config, log *slog.Logger, allocate func(id int) (netip.AddrPo
 	r := &Router{cfg: cfg, log: log, peers: map[netip.AddrPort]time.Time{}, buckets: map[netip.Addr]bucket{}}
 	if cfg.Mode != Direct {
 		r.relay = newRelay(allocate, release, log, cfg.RelayMaxClients)
+		r.relay.rewrite = cfg.RewritePeer
 	}
 	if cfg.Mode == Adaptive {
 		r.adaptive = newAdaptive(r.relay, log, cfg.DirectWindow)

@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/princebyyourlogic/angelware/internal/bitbuf"
 )
@@ -23,17 +25,22 @@ import (
 // Replies (0x64ea0): u32 error, u8 task id (1/4/5/6 carry results), u32 count, results.
 // A create result is blob id[8], blob key[16].
 type Matchmaking struct {
-	Log      *slog.Logger
-	mu       sync.RWMutex
-	sessions map[[8]byte]*mmSession
-	created  uint64
+	Log                 *slog.Logger
+	ObserveConnectivity func(ConnectivityEvent)
+	mu                  sync.RWMutex
+	sessions            map[[8]byte]*mmSession
+	created             uint64
 }
 
 type mmSession struct {
-	key   []byte
-	owner any
-	info  []bitbuf.Field
-	order uint64 // creation order, for stable search results
+	key         []byte
+	owner       any
+	info        []bitbuf.Field
+	order       uint64 // creation order, for stable search results
+	createdAt   time.Time
+	disclosed   any
+	disclosedIP netip.Addr
+	ambiguous   bool
 }
 
 const (
@@ -74,7 +81,7 @@ func (m *Matchmaking) Handle(owner any, t Task) []byte {
 		if t.ID == mmCreate {
 			return m.create(owner, t, args)
 		}
-		m.update(args)
+		m.update(owner, args)
 		return mmReply(t, 0, nil)
 	case mmDelete:
 		if len(args) > 0 && len(args[0].Bytes) == 8 {
@@ -86,11 +93,18 @@ func (m *Matchmaking) Handle(owner any, t Task) []byte {
 		return mmReply(t, 0, nil)
 	case mmFindByID:
 		if len(args) > 0 && len(args[0].Bytes) == 8 {
-			m.mu.RLock()
-			s := m.sessions[[8]byte(args[0].Bytes)]
-			m.mu.RUnlock()
-			if s != nil {
-				return mmReply(t, 1, s.info)
+			m.mu.Lock()
+			entry := m.sessions[[8]byte(args[0].Bytes)]
+			var info []bitbuf.Field
+			if entry != nil {
+				info = append([]bitbuf.Field(nil), entry.info...)
+				if m.ObserveConnectivity != nil {
+					entry.noteDisclosure(owner)
+				}
+			}
+			m.mu.Unlock()
+			if entry != nil {
+				return mmReply(t, 1, info)
 			}
 		}
 		return mmReply(t, 0, nil)
@@ -122,20 +136,36 @@ func (m *Matchmaking) create(owner any, t Task, info []bitbuf.Field) []byte {
 	info[infoKey] = bitbuf.Bytes(bitbuf.Blob, key)
 	m.mu.Lock()
 	m.created++
-	m.sessions[id] = &mmSession{key: key, owner: owner, info: info, order: m.created}
+	entry := &mmSession{key: key, owner: owner, info: info, order: m.created, createdAt: time.Now()}
+	m.sessions[id] = entry
+	event, eligible := entry.connectivityEvent(id, info, entry.createdAt)
 	n := len(m.sessions)
 	m.mu.Unlock()
 	m.Log.Info("session created", "session", fmt.Sprintf("%x", id), "open", n)
+	if m.ObserveConnectivity != nil && eligible {
+		event.Created = true
+		m.ObserveConnectivity(event)
+	}
 	return mmReply(t, 1, []bitbuf.Field{bitbuf.Bytes(bitbuf.Blob, id[:]), bitbuf.Bytes(bitbuf.Blob, key)})
 }
 
-func (m *Matchmaking) update(info []bitbuf.Field) {
+func (m *Matchmaking) update(owner any, info []bitbuf.Field) {
 	id := [8]byte(info[infoID].Bytes)
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s := m.sessions[id]; s != nil {
-		info[infoKey] = bitbuf.Bytes(bitbuf.Blob, s.key)
-		s.info = info
+	var event ConnectivityEvent
+	notify := false
+	if entry := m.sessions[id]; entry != nil && entry.owner == owner {
+		before, validBefore := nativePeers(entry.info)
+		after, validAfter := nativePeers(info)
+		if m.ObserveConnectivity != nil && validBefore && validAfter && before < 2 && after == 2 {
+			event, notify = entry.connectivityEvent(id, info, time.Now())
+		}
+		info[infoKey] = bitbuf.Bytes(bitbuf.Blob, entry.key)
+		entry.info = info
+	}
+	m.mu.Unlock()
+	if notify {
+		m.ObserveConnectivity(event)
 	}
 }
 
@@ -156,4 +186,15 @@ func (m *Matchmaking) Open() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.sessions)
+}
+
+// RoomKey supplies the optional peer rewriter with the key from the same room
+// that the captured DTLS handshake names. The caller receives its own copy.
+func (m *Matchmaking) RoomKey(id [8]byte) ([]byte, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s := m.sessions[id]; s != nil {
+		return append([]byte(nil), s.key...), true
+	}
+	return nil, false
 }

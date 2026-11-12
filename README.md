@@ -155,6 +155,8 @@ All set in `.env`:
 | `ANGELWARE_PORT` | `3074` | Main port, TCP and UDP (the game expects 3074) |
 | `ANGELWARE_STUN_ALT_PORT` | `3075` | Second UDP port for NAT detection |
 | `ANGELWARE_STUN_MODE` | `direct` | SvR 2007 connection mode; keep `direct` (see below) |
+| `ANGELWARE_SVR_RELAY_REWRITE` | `off` | Experimental SvR match-address rewrite on relayed connections; see below |
+| `ANGELWARE_SVR_OBSERVER` | `off` | Observe authenticated stock-host peer-count reports; requires adaptive + rewrite |
 | `ANGELWARE_BRO` | `on` | `off` disables the CoD BRO service |
 | `ANGELWARE_BRO_PORT`, `ANGELWARE_BRO_ALT_PORT` | `2273`, `2274` | CoD BRO's NAT detection ports |
 | `ANGELWARE_BRO_MODE` | `relay` | CoD BRO connection mode (see below) |
@@ -180,12 +182,36 @@ Each game's NAT service runs in one of three modes, all on a single public IPv4 
 All players must sign in again and create new rooms after the mode changes. The relay and adaptive
 modes are a port of codstun, written for CoD BRO.
 
-**SvR 2007 should use `direct`.** Its matches don't run over DemonWare. The game's own netcode
+**SvR 2007 defaults to `direct`; relay mode needs the experimental rewrite below.** Its matches don't run over DemonWare. The game's own netcode
 connects to the host's public address, or to the host's LAN address when both players share a public
 IP. Every relay endpoint shares the server's IP, so in `relay` mode every pair takes the LAN branch
 and the match fails. The host sends the address the joiner uses over an encrypted DemonWare peer
-channel, so the relay can't rewrite it. `adaptive` can help the lobby join, but the match still goes
-direct.
+channel, which the ordinary relay forwards unchanged. Rewriting only the matchmaking result does
+not work: the host replaces that result after joining.
+
+An experimental fix is available with `ANGELWARE_SVR_RELAY_REWRITE=on` and `ANGELWARE_STUN_MODE=relay`
+or `adaptive`. The server records login randomness, reconstructs a peer key against the actual
+handshake public key, and rewrites both host-address copies in the encrypted join-accept to the
+host's relay endpoint. It then re-encrypts the packet and recomputes its HMAC. Only connections
+already admitted to a relay pair are changed; direct connections retain their addresses.
+Captured-packet tests pass for distinct and shared public IPs. Live two-client tests reached
+controllable gameplay through both adaptive branches: blocked direct UDP triggered relay fallback
+and verified game DATA/ACK cycles through the relay; a fresh unblocked room used direct game
+DATA/ACKs with no relay-port game traffic. Both players must sign in again and create a new room
+after enabling it. See
+[peer encryption and relay rewriting](docs/svr2007-peer-encryption.md).
+
+`ANGELWARE_SVR_OBSERVER=on` observes the stock host's authenticated matchmaking updates.
+A fresh two-player room changing from fewer than two native peers to two can confirm prematch
+connection completion when exactly one guest gateway received its room key and that guest's IP
+identifies one registered non-host UDP endpoint. The observer checks room generation, ownership,
+and relay admission before recording a direct result. A current direct result suppresses extra
+relay offers only for that same outstanding signed traversal. Multiple key recipients, ambiguous
+UDP registrations, or missing reports remain unmeasured and keep native-retry fallback intact.
+It adds no peer, opens no extra UDP port, and does not alter room capacity. This measures native
+prematch completion, not the later GSS address's reachability.
+
+Without `ANGELWARE_SVR_RELAY_REWRITE=on`, `adaptive` can help the lobby join, but the match still goes direct.
 
 To test two emulators behind one router, set PCSX2's network adapter to a bridged mode (PCAP or TAP)
 so each emulated PS2 gets a real LAN address. In the default sockets mode every PS2 reports the same

@@ -97,6 +97,8 @@ type relay struct {
 	introductions map[string]introduction // expected native 0x0c replies
 	budgets       map[int]bucket
 	nextID        int
+	rewrite       func(sender, destination int, senderControl, senderVirtual,
+		destinationControl, destinationVirtual netip.AddrPort, packet []byte, now time.Time) []byte
 
 	// allowPair, when set (adaptive mode), limits forwarding to offered pairs.
 	allowPair func(a, b int, now time.Time) bool
@@ -244,6 +246,10 @@ func (r *relay) deliver(sender, destination int, from netip.AddrPort, packet []b
 	f.packets[side]++
 	f.bytes[side] += len(packet)
 	f.lastSeen = now
+	if r.rewrite != nil {
+		a, b := r.clients[sender], r.clients[destination]
+		packet = r.rewrite(sender, destination, a.control, a.virtual, b.control, b.virtual, packet, now)
+	}
 	return []Outbound{{Listener{Relay: sender}, target, packet, "relay-data"}}
 }
 

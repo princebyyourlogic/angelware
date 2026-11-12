@@ -22,25 +22,32 @@ const (
 var maxAttempts = 1024 // a variable for tests
 
 type attempt struct {
-	a, b         int
-	packet       []byte
-	first, last  time.Time
-	requests     int
-	pendingOffer bool
-	offered      time.Time
-	offers       int
+	a, b          int
+	packet        []byte
+	first, last   time.Time
+	requests      int
+	pendingOffer  bool
+	offered       time.Time
+	offers        int
+	directReceipt bool // a current native mesh observer verified completion
 }
 
 type adaptive struct {
-	relay    *relay
-	log      *slog.Logger
-	window   time.Duration
-	attempts map[pair]*attempt // (connector, target)
-	offered  map[pair]time.Time
+	relay     *relay
+	log       *slog.Logger
+	window    time.Duration
+	attempts  map[pair]*attempt // (connector, target)
+	offered   map[pair]time.Time
+	observers map[int]observerGeneration
+}
+
+type observerGeneration struct {
+	room    [8]byte
+	started time.Time
 }
 
 func newAdaptive(r *relay, log *slog.Logger, window time.Duration) *adaptive {
-	a := &adaptive{relay: r, log: log, window: window, attempts: map[pair]*attempt{}, offered: map[pair]time.Time{}}
+	a := &adaptive{relay: r, log: log, window: window, attempts: map[pair]*attempt{}, offered: map[pair]time.Time{}, observers: map[int]observerGeneration{}}
 	r.allowPair = a.allows
 	return a
 }
@@ -113,7 +120,7 @@ func (ad *adaptive) introduce(req request, from netip.AddrPort, now time.Time) [
 }
 
 func (ad *adaptive) offer(at *attempt, now time.Time) []Outbound {
-	if !at.pendingOffer || !at.offered.IsZero() && now.Sub(at.offered) < offerInterval {
+	if at.directReceipt || !at.pendingOffer || !at.offered.IsZero() && now.Sub(at.offered) < offerInterval {
 		return nil
 	}
 	target, ok1 := ad.relay.mapping(at.a, at.b, now)
@@ -142,6 +149,11 @@ func (ad *adaptive) tick(now time.Time) []Outbound {
 	for key := range ad.offered {
 		if !ad.allows(key.a, key.b, now) {
 			delete(ad.offered, key)
+		}
+	}
+	for id := range ad.observers {
+		if ad.relay.clients[id] == nil {
+			delete(ad.observers, id)
 		}
 	}
 	return out

@@ -40,15 +40,19 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.Validate(); err != nil {
 		return err
 	}
+	s.mu.Lock()
 	s.relays = map[int]*net.UDPConn{}
 	s.router = NewRouter(s.Config, s.Log, s.allocate, s.release)
+	s.mu.Unlock()
 	for i, port := range []int{s.Port, s.AltPort} {
 		c, err := listen(s.Bind, port)
 		if err != nil {
 			s.closeAll()
 			return err
 		}
+		s.mu.Lock()
 		s.ports[i] = c
+		s.mu.Unlock()
 	}
 	s.Log.Info("stun listening", "udp", []int{s.Port, s.AltPort}, "mode", s.Mode)
 

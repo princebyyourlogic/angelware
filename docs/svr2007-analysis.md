@@ -78,6 +78,9 @@ The STUN path (`bdIPDiscoveryClient` etc.) has not been traced yet.
 
 ## Wire protocol (auth and lobby gateway)
 
+For the separate console-to-console channel, see
+[peer encryption and the verified private-key recovery test](svr2007-peer-encryption.md).
+
 **Framing** (`bdAuthTransport` send 0x896d8 / receive 0x8a068): `u16 LE length, u8 encrypted`, then
 either `u8 type, payload` (length = payload + 2) or `u32 seed, ciphertext` (length = ciphertext + 5).
 The ciphertext is 3DES-CBC over `u32 0xDEADBEEF, u8 type, payload`, padded to 8 bytes, with

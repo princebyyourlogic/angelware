@@ -299,6 +299,24 @@ func TestRelaySignedIntroductionPreserved(t *testing.T) {
 	}
 }
 
+func TestRelayTitleTransformAfterMappingProof(t *testing.T) {
+	n := newNetwork(t, Relay, three("EDM"), false)
+	calls := 0
+	n.relay.rewrite = func(sender, destination int, source, virtual, target, targetVirtual netip.AddrPort,
+		packet []byte, now time.Time) []byte {
+		calls++
+		if source != n.clients[0].control || virtual != n.clients[0].virtual ||
+			target != n.clients[1].control || targetVirtual != n.clients[1].virtual {
+			t.Fatal("transform did not receive the proved pair's endpoints")
+		}
+		return append(bytes.Clone(packet), 'x')
+	}
+	n.pump(n.send(0, 1, payload, at(1)), at(1.1), true)
+	if calls != 1 || !bytes.Equal(n.last(1).data, append(bytes.Clone(payload), 'x')) {
+		t.Fatalf("transform calls %d or transformed packet not delivered", calls)
+	}
+}
+
 func TestRelaySourceMappingCanChange(t *testing.T) {
 	n := newNetwork(t, Relay, three("EDM"), false)
 	n.pump(n.send(0, 1, payload, at(1)), at(1.1), true)
