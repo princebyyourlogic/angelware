@@ -1,7 +1,30 @@
-# angelware
+<p align="center">
+  <img src="docs/assets/angelware-logo.png" alt="AngelWare" width="520">
+</p>
 
-A replacement for **DemonWare**, the online backend used by a number of PS2 games, so those games can
-play online again with an unmodified disc.
+<h3 align="center">Bringing PS2 DemonWare games back online</h3>
+
+<p align="center">
+  A replacement for <b>DemonWare</b>, the online backend behind a number of PS2 games,<br>
+  so they can play online again with an unmodified disc.
+</p>
+
+<p align="center">
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white">
+  <img alt="Docker Compose" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
+  <img alt="PlayStation 2" src="https://img.shields.io/badge/PlayStation%202-online-003791?logo=playstation&logoColor=white">
+</p>
+
+<p align="center">
+  <a href="#dns-redirects">DNS redirects</a> ·
+  <a href="#running-the-server">Running the server</a> ·
+  <a href="docs/svr2007-analysis.md">Protocol notes</a>
+</p>
+
+---
+
+## Status
 
 The first supported game is **WWE SmackDown vs. Raw 2007** (US, `SLUS-214.27`, v1.01).
 
